@@ -6,6 +6,14 @@ import { listCommand } from "./commands/list.js";
 import { rmCommand } from "./commands/rm.js";
 import { stopCommand } from "./commands/stop.js";
 import { statusCommand } from "./commands/status.js";
+import { mcpCommand } from "./commands/mcp.js";
+import {
+  setUrlCommand,
+  setPortCommand,
+  setApiPortCommand,
+  setStorageCommand,
+  configCommand,
+} from "./commands/config.js";
 
 const program = new Command();
 
@@ -50,5 +58,35 @@ program
   .command("status")
   .description("Show daemon status and recent log")
   .action(() => statusCommand());
+
+program
+  .command("url")
+  .description("Set base URL and test connectivity")
+  .action(() => setUrlCommand());
+
+program
+  .command("port")
+  .description("Set public HTTP port")
+  .action(() => setPortCommand());
+
+program
+  .command("api_port")
+  .description("Set internal API port")
+  .action(() => setApiPortCommand());
+
+program
+  .command("storage")
+  .description("Set storage path")
+  .action(() => setStorageCommand());
+
+program
+  .command("config")
+  .description("Reconfigure all settings interactively")
+  .action(() => configCommand());
+
+program
+  .command("mcp")
+  .description("Start MCP server (stdio, for Claude Code integration)")
+  .action(() => mcpCommand());
 
 program.parse();

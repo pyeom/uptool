@@ -6,6 +6,8 @@ import { listCommand } from "./commands/list.js";
 import { rmCommand } from "./commands/rm.js";
 import { stopCommand } from "./commands/stop.js";
 import { statusCommand } from "./commands/status.js";
+import { openCommand } from "./commands/open.js";
+import { rollbackCommand } from "./commands/rollback.js";
 import { mcpCommand } from "./commands/mcp.js";
 import {
   setUrlCommand,
@@ -20,7 +22,7 @@ const program = new Command();
 program
   .name("uptool")
   .description("Serve LLM-generated HTML files via wildcard subdomains on your own domain")
-  .version("0.1.0");
+  .version("0.2.0");
 
 program
   .command("init")
@@ -35,8 +37,11 @@ program
 
 program
   .command("deploy [file]")
-  .description("Deploy an HTML file (or stdin) and get a URL back")
-  .option("-u, --update <slug>", "Update an existing deployment by slug")
+  .description(
+    "Deploy an HTML file, directory bundle, or stdin — prints the public URL"
+  )
+  .option("-u, --update <slug>", "Update an existing deployment by slug or name")
+  .option("-n, --name <name>", "Assign a stable named slug (e.g. 'dashboard')")
   .action((file, opts) => deployCommand(file, opts));
 
 program
@@ -46,8 +51,18 @@ program
 
 program
   .command("rm <slug>")
-  .description("Remove a deployed file by slug")
+  .description("Remove a deployed file by slug or name")
   .action((slug) => rmCommand(slug));
+
+program
+  .command("open <slug>")
+  .description("Open a deployment in the default browser")
+  .action((slug) => openCommand(slug));
+
+program
+  .command("rollback <slug>")
+  .description("Restore the previous version of a deployment")
+  .action((slug) => rollbackCommand(slug));
 
 program
   .command("stop")

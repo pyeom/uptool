@@ -1,13 +1,23 @@
 import { loadConfig } from "../config/index.js";
-import { removeFile } from "../storage/index.js";
+import { callApi } from "../lib/api-client.js";
 
-export function rmCommand(slug: string): void {
+export async function rmCommand(slug: string): Promise<void> {
   const config = loadConfig();
-  const removed = removeFile(config.storage_path, slug);
-  if (removed) {
-    console.log(`✓ Removed ${slug}`);
-  } else {
-    console.error(`Not found: ${slug}`);
+
+  try {
+    const result = await callApi<{ removed: boolean; error?: string }>(
+      config.api_port,
+      "DELETE",
+      `/files/${slug}`
+    );
+    if (result.removed) {
+      console.log(`✓ Removed ${slug}`);
+    } else {
+      console.error(`Not found: ${slug}`);
+      process.exit(1);
+    }
+  } catch (err) {
+    console.error(`Error: ${(err as Error).message}`);
     process.exit(1);
   }
 }

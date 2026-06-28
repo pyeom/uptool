@@ -1,14 +1,17 @@
 import * as fs from "node:fs";
-import * as path from "node:path";
 import * as child_process from "node:child_process";
-import { loadConfig, configDir, pidPath, logPath, resolvePath } from "../config/index.js";
+import { loadConfig, configDir, pidPath, logPath } from "../config/index.js";
 import { createApiServer } from "../server/api.js";
 import { createPublicServer } from "../server/public.js";
-import { cleanExpired } from "../storage/index.js";
+import { WsManager } from "../server/ws.js";
+import { ManifestStore } from "../storage/index.js";
 
 export function serveCommand(opts: { foreground?: boolean }): void {
   const config = loadConfig();
 
+  // -------------------------------------------------------------------------
+  // Daemon mode: fork a background process
+  // -------------------------------------------------------------------------
   if (!opts.foreground) {
     const pidFile = pidPath();
     if (fs.existsSync(pidFile)) {
@@ -24,10 +27,11 @@ export function serveCommand(opts: { foreground?: boolean }): void {
     const out = fs.openSync(logFile, "a");
     const err = fs.openSync(logFile, "a");
 
-    const child = child_process.spawn(process.execPath, [process.argv[1], "serve", "--foreground"], {
-      detached: true,
-      stdio: ["ignore", out, err],
-    });
+    const child = child_process.spawn(
+      process.execPath,
+      [process.argv[1], "serve", "--foreground"],
+      { detached: true, stdio: ["ignore", out, err] }
+    );
     child.unref();
 
     console.log(`✓ uptool daemon started → *.${config.base_url} (port ${config.port})`);
@@ -35,28 +39,48 @@ export function serveCommand(opts: { foreground?: boolean }): void {
     process.exit(0);
   }
 
-  // Foreground mode — actual server process
+  // -------------------------------------------------------------------------
+  // Foreground mode: the actual server process
+  // -------------------------------------------------------------------------
   const dir = configDir();
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(pidPath(), String(process.pid));
 
-  process.on("SIGTERM", () => {
-    if (fs.existsSync(pidPath())) fs.unlinkSync(pidPath());
-    process.exit(0);
+  // Initialise in-memory manifest store (single owner of all state)
+  const store = new ManifestStore(config.storage_path, {
+    ttl: config.ttl,
+    max_versions: config.max_versions,
   });
 
-  process.on("SIGINT", () => {
-    if (fs.existsSync(pidPath())) fs.unlinkSync(pidPath());
-    process.exit(0);
-  });
-
-  const expired = cleanExpired(config.storage_path);
+  const expired = store.cleanExpired();
   if (expired > 0) console.log(`Cleaned ${expired} expired file(s)`);
 
-  setInterval(() => cleanExpired(config.storage_path), 60 * 60 * 1000);
+  // Hourly expiry sweep
+  setInterval(() => {
+    const n = store.cleanExpired();
+    if (n > 0) console.log(`Cleaned ${n} expired file(s)`);
+  }, 60 * 60 * 1000);
 
-  const publicServer = createPublicServer(config);
-  const apiServer = createApiServer(config);
+  const publicServer = createPublicServer(config, store);
+  const apiServer = createApiServer(config, store);
+
+  // Live reload: attach WebSocket manager and wire store 'updated' events
+  let wsManager: WsManager | null = null;
+  if (config.live_reload) {
+    wsManager = new WsManager(publicServer, config);
+    store.on("updated", (slug: string) => wsManager!.broadcast(slug, "reload"));
+  }
+
+  // Graceful shutdown
+  function shutdown(): void {
+    store.flushNow();
+    wsManager?.close();
+    if (fs.existsSync(pidPath())) fs.unlinkSync(pidPath());
+    process.exit(0);
+  }
+
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 
   publicServer.listen(config.port, () => {
     console.log(`Public server listening on port ${config.port}`);

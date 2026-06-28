@@ -124,7 +124,7 @@ export async function configCommand(): Promise<void> {
     process.exit(1);
   }
 
-  const updated: Config = { base_url, port, api_port, ttl, storage_path };
+  const updated: Config = { ...config, base_url, port, api_port, ttl, storage_path };
   saveConfig(updated);
   console.log(`\n✓ Config saved to ${configPath()}`);
 }

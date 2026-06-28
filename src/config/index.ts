@@ -9,6 +9,20 @@ export interface Config {
   api_port: number;
   ttl: string;
   storage_path: string;
+  /** "http" or "https" — used when building public URLs */
+  scheme: string;
+  /** Max request body size in bytes for the internal API. Default 10 MB. */
+  max_body_bytes: number;
+  /** Content-Security-Policy header sent with served HTML. Empty string = omit. */
+  csp: string;
+  /** Inject live-reload WebSocket script into served HTML. Default true. */
+  live_reload: boolean;
+  /** How many versions to keep per deployment. 0 = disable versioning. Default 5. */
+  max_versions: number;
+  /** Path to TLS certificate file (PEM). Optional — enables HTTPS if set with key_file. */
+  cert_file?: string;
+  /** Path to TLS private key file (PEM). Optional — enables HTTPS if set with cert_file. */
+  key_file?: string;
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -17,6 +31,11 @@ export const DEFAULT_CONFIG: Config = {
   api_port: 3001,
   ttl: "72h",
   storage_path: path.join(os.homedir(), ".uptool", "files"),
+  scheme: "http",
+  max_body_bytes: 10 * 1024 * 1024, // 10 MB
+  csp: "default-src 'self' 'unsafe-inline' 'unsafe-eval' *; img-src * data: blob:;",
+  live_reload: true,
+  max_versions: 5,
 };
 
 export function configDir(): string {
@@ -48,7 +67,11 @@ export function loadConfig(): Config {
 export function saveConfig(config: Config): void {
   const dir = configDir();
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(configPath(), stringify(config as unknown as Record<string, unknown>));
+  // Filter undefined values — smol-toml can't serialize them
+  const toWrite = Object.fromEntries(
+    Object.entries(config).filter(([, v]) => v !== undefined)
+  );
+  fs.writeFileSync(configPath(), stringify(toWrite as Record<string, unknown>));
 }
 
 export function resolvePath(p: string): string {
@@ -66,4 +89,11 @@ export function parseTtlMs(ttl: string): number {
   if (unit === "d") return n * 24 * 60 * 60 * 1000;
   if (unit === "m") return n * 60 * 1000;
   return 0;
+}
+
+/** Build a public URL for a slug (and optional file path within the bundle). */
+export function publicUrl(config: Config, slug: string, filePath?: string): string {
+  const base = `${config.scheme}://${slug}.${config.base_url}`;
+  if (!filePath || filePath === "/") return base;
+  return `${base}/${filePath.replace(/^\/+/, "")}`;
 }

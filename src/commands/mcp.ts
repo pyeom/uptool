@@ -1,8 +1,8 @@
-import * as http from "node:http";
 import * as fs from "node:fs";
 import * as readline from "node:readline";
-import { loadConfig, parseTtlMs, pidPath } from "../config/index.js";
+import { loadConfig, parseTtlMs, pidPath, publicUrl } from "../config/index.js";
 import type { Config } from "../config/index.js";
+import { callApi } from "../lib/api-client.js";
 
 interface RpcRequest {
   jsonrpc: "2.0";
@@ -16,57 +16,45 @@ function send(id: number | string | null | undefined, result: unknown): void {
 }
 
 function sendError(id: number | string | null | undefined, code: number, message: string): void {
-  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: id ?? null, error: { code, message } }) + "\n");
-}
-
-function callApi(config: Config, method: string, path: string, body?: object): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const payload = body ? JSON.stringify(body) : undefined;
-    const options: http.RequestOptions = {
-      hostname: "127.0.0.1",
-      port: config.api_port,
-      path,
-      method,
-      headers: payload
-        ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
-        : {},
-    };
-    const req = http.request(options, (res) => {
-      let data = "";
-      res.on("data", (c) => (data += c));
-      res.on("end", () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch {
-          reject(new Error(`Invalid API response: ${data}`));
-        }
-      });
-    });
-    req.on("error", (err) => {
-      if ((err as NodeJS.ErrnoException).code === "ECONNREFUSED") {
-        reject(new Error("uptool server not running — run: uptool serve"));
-      } else {
-        reject(err);
-      }
-    });
-    if (payload) req.write(payload);
-    req.end();
-  });
+  process.stdout.write(
+    JSON.stringify({ jsonrpc: "2.0", id: id ?? null, error: { code, message } }) + "\n"
+  );
 }
 
 const TOOLS = [
   {
     name: "deploy_html",
     description:
-      "Deploy HTML content and get a public URL served from your wildcard subdomain. Returns the URL.",
+      "Deploy HTML content (or a file bundle) and get a public URL served from your wildcard subdomain. Returns the URL.",
     inputSchema: {
       type: "object",
       properties: {
-        html: { type: "string", description: "HTML content to deploy" },
-        filename: { type: "string", description: "Display name for the file (optional, defaults to claude.html)" },
-        slug: { type: "string", description: "Existing slug to update rather than create a new deployment (optional)" },
+        html: { type: "string", description: "HTML content to deploy (single-file mode)" },
+        files: {
+          type: "object",
+          description:
+            "Bundle mode: object mapping relative file paths to base64-encoded content (e.g. { 'index.html': '<base64>', 'style.css': '<base64>' }). Use instead of 'html' for multi-file deployments.",
+          additionalProperties: { type: "string" },
+        },
+        entry: {
+          type: "string",
+          description: "Root file path within the bundle to serve for '/'. Default 'index.html'.",
+        },
+        filename: {
+          type: "string",
+          description: "Display name for the deployment (optional, defaults to 'claude.html')",
+        },
+        slug: {
+          type: "string",
+          description:
+            "Existing slug or name to update rather than create a new deployment (optional)",
+        },
+        name: {
+          type: "string",
+          description:
+            "Stable human-readable name for the deployment, e.g. 'dashboard'. Becomes dashboard.mydev.com. Lowercase letters, digits, hyphens only.",
+        },
       },
-      required: ["html"],
     },
   },
   {
@@ -76,11 +64,11 @@ const TOOLS = [
   },
   {
     name: "remove_deployment",
-    description: "Remove a deployed HTML file by its slug.",
+    description: "Remove a deployed HTML file by its slug or name.",
     inputSchema: {
       type: "object",
       properties: {
-        slug: { type: "string", description: "Slug of the deployment to remove" },
+        slug: { type: "string", description: "Slug or name of the deployment to remove" },
       },
       required: ["slug"],
     },
@@ -106,45 +94,64 @@ async function handleToolCall(
 ): Promise<string> {
   switch (name) {
     case "deploy_html": {
-      const html = String(args.html ?? "");
+      const html = args.html !== undefined ? String(args.html) : undefined;
+      const files = args.files as Record<string, string> | undefined;
+      const entry = args.entry ? String(args.entry) : "index.html";
       const filename = String(args.filename ?? "claude.html");
-      const slug = args.slug ? String(args.slug) : undefined;
-      const body: Record<string, string> = { html, filename };
-      if (slug) body.slug = slug;
-      const result = (await callApi(config, "POST", "/deploy", body)) as {
-        slug?: string;
-        error?: string;
-      };
+      const slugArg = args.slug ? String(args.slug) : undefined;
+      const nameArg = args.name ? String(args.name) : undefined;
+
+      const body: Record<string, unknown> = { filename, entry };
+      if (html !== undefined) body.html = html;
+      else if (files) body.files = files;
+      else throw new Error("Provide either 'html' or 'files'");
+
+      if (slugArg) body.slug = slugArg;
+      if (nameArg) body.name = nameArg;
+
+      const result = (await callApi<{ slug?: string; error?: string }>(
+        config.api_port,
+        "POST",
+        "/deploy",
+        body
+      ));
       if (result.error) throw new Error(result.error);
-      const url = `http://${result.slug}.${config.base_url}`;
+
+      const resolvedSlug = result.slug ?? slugArg!;
+      const url = publicUrl(config, nameArg ?? resolvedSlug);
       const ttlMs = parseTtlMs(config.ttl);
       const expiry = ttlMs > 0 ? ` (expires in ${config.ttl})` : "";
       return `${url}${expiry}`;
     }
 
     case "list_deployments": {
-      const result = (await callApi(config, "GET", "/files")) as {
-        files: Array<{ slug: string; filename: string; created: number; expires: number }>;
-      };
+      const result = await callApi<{
+        files: Array<{ slug: string; filename: string; created: number; expires: number; name?: string }>;
+      }>(config.api_port, "GET", "/files");
       if (!result.files || result.files.length === 0) return "No deployments found.";
       const now = Date.now();
       return result.files
         .map((f) => {
-          const url = `http://${f.slug}.${config.base_url}`;
+          const url = publicUrl(config, f.name ?? f.slug);
           const expiry =
             f.expires > 0
               ? f.expires > now
                 ? `expires in ${formatDuration(f.expires - now)}`
                 : "EXPIRED"
               : "no expiry";
-          return `${f.slug}  ${url}  [${f.filename}]  ${expiry}`;
+          const nameTag = f.name ? `  name: ${f.name}` : "";
+          return `${f.slug}  ${url}  [${f.filename}]${nameTag}  ${expiry}`;
         })
         .join("\n");
     }
 
     case "remove_deployment": {
       const slug = String(args.slug ?? "");
-      const result = (await callApi(config, "DELETE", `/files/${slug}`)) as { removed: boolean };
+      const result = await callApi<{ removed: boolean }>(
+        config.api_port,
+        "DELETE",
+        `/files/${slug}`
+      );
       return result.removed ? `Removed: ${slug}` : `Not found: ${slug}`;
     }
 
@@ -154,7 +161,7 @@ async function handleToolCall(
       const pid = parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
       try {
         process.kill(pid, 0);
-        return `uptool: running (pid ${pid})\nBase URL: http://<slug>.${config.base_url}`;
+        return `uptool: running (pid ${pid})\nBase URL: ${publicUrl(config, "<slug>")}`;
       } catch {
         return `uptool: stopped (stale PID ${pid})`;
       }
@@ -197,7 +204,7 @@ export function mcpCommand(): void {
           send(req.id, {
             protocolVersion: "2024-11-05",
             capabilities: { tools: {} },
-            serverInfo: { name: "uptool", version: "0.1.0" },
+            serverInfo: { name: "uptool", version: "0.2.0" },
           });
           break;
 

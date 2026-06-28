@@ -1,13 +1,36 @@
 import * as http from "node:http";
 import { Config } from "../config/index.js";
-import { storeFile, updateFile, removeFile, listFiles, stripMarkdownFences } from "../storage/index.js";
+import { ManifestStore, stripMarkdownFences, isValidName } from "../storage/index.js";
 
-function readBody(req: http.IncomingMessage): Promise<string> {
+const DEFAULT_ENTRY = "index.html";
+
+/**
+ * Read the request body, enforcing a maximum byte limit.
+ * Rejects with code "TOO_LARGE" if the limit is exceeded.
+ */
+function readBody(req: http.IncomingMessage, maxBytes: number): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = "";
-    req.on("data", (chunk) => (data += chunk));
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
+    let size = 0;
+
+    let overflow = false;
+
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes && !overflow) {
+        overflow = true;
+        const err = new Error("Request entity too large") as NodeJS.ErrnoException;
+        err.code = "TOO_LARGE";
+        reject(err);
+        // Do NOT destroy the socket here — the handler still needs to write
+        // the 413 response while the connection is open.
+        return;
+      }
+      if (!overflow) data += chunk.toString();
+    });
+
+    req.on("end", () => { if (!overflow) resolve(data); });
+    req.on("error", (err) => { if (!overflow) reject(err); });
   });
 }
 
@@ -17,22 +40,72 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
-export function createApiServer(config: Config): http.Server {
+export function createApiServer(config: Config, store: ManifestStore): http.Server {
   return http.createServer(async (req, res) => {
-    const url = new URL(req.url ?? "/", `http://localhost`);
+    const url = new URL(req.url ?? "/", "http://localhost");
 
+    // ------------------------------------------------------------------
+    // POST /deploy — create or update a deployment
+    // ------------------------------------------------------------------
     if (req.method === "POST" && url.pathname === "/deploy") {
+      let bodyStr: string;
       try {
-        const body = await readBody(req);
-        const parsed = JSON.parse(body) as { html: string; filename?: string; slug?: string };
-        const html = stripMarkdownFences(parsed.html);
+        bodyStr = await readBody(req, config.max_body_bytes);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "TOO_LARGE") {
+          json(res, 413, { error: "Request entity too large" });
+        } else {
+          json(res, 400, { error: String(err) });
+        }
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(bodyStr) as {
+          /** Single HTML string (back-compat). */
+          html?: string;
+          /** Bundle: relPath → base64 content. */
+          files?: Record<string, string>;
+          /** Root file within the bundle (default "index.html"). */
+          entry?: string;
+          /** Display name. */
+          filename?: string;
+          /** Existing slug (or name) to update instead of creating new. */
+          slug?: string;
+          /** Stable human-readable name (e.g. "dashboard"). */
+          name?: string;
+        };
+
+        // Validate name if provided
+        if (parsed.name && !isValidName(parsed.name)) {
+          json(res, 400, {
+            error: `Invalid name "${parsed.name}". Use lowercase letters, digits, hyphens; start with letter/digit; max 31 chars.`,
+          });
+          return;
+        }
+
+        const entry = parsed.entry ?? DEFAULT_ENTRY;
         const filename = parsed.filename ?? "untitled.html";
 
-        if (parsed.slug) {
-          updateFile(config.storage_path, parsed.slug, html, filename, config.ttl);
-          json(res, 200, { slug: parsed.slug });
+        // Resolve content: html string OR files bundle
+        let html: string | null = null;
+        let files: Record<string, string> | null = null;
+
+        if (parsed.html !== undefined) {
+          html = stripMarkdownFences(parsed.html);
+        } else if (parsed.files !== undefined) {
+          files = parsed.files;
         } else {
-          const slug = storeFile(config.storage_path, html, filename, config.ttl);
+          json(res, 400, { error: "Provide either 'html' or 'files'" });
+          return;
+        }
+
+        if (parsed.slug) {
+          // Update existing deployment (slug field accepts slug OR name)
+          const resolvedSlug = store.update(parsed.slug, html, files, entry, filename);
+          json(res, 200, { slug: resolvedSlug });
+        } else {
+          const slug = store.store(html, files, entry, filename, parsed.name);
           json(res, 200, { slug });
         }
       } catch (err) {
@@ -41,16 +114,42 @@ export function createApiServer(config: Config): http.Server {
       return;
     }
 
+    // ------------------------------------------------------------------
+    // DELETE /files/:slug — remove a deployment
+    // ------------------------------------------------------------------
     if (req.method === "DELETE" && url.pathname.startsWith("/files/")) {
       const slug = url.pathname.slice("/files/".length);
-      const removed = removeFile(config.storage_path, slug);
+      const removed = store.remove(slug);
       json(res, removed ? 200 : 404, { removed });
       return;
     }
 
+    // ------------------------------------------------------------------
+    // GET /files — list all deployments
+    // ------------------------------------------------------------------
     if (req.method === "GET" && url.pathname === "/files") {
-      const files = listFiles(config.storage_path);
-      json(res, 200, { files });
+      json(res, 200, { files: store.list() });
+      return;
+    }
+
+    // ------------------------------------------------------------------
+    // POST /files/:slug/rollback — restore previous version
+    // ------------------------------------------------------------------
+    if (
+      req.method === "POST" &&
+      /^\/files\/[^/]+\/rollback$/.test(url.pathname)
+    ) {
+      const slug = url.pathname.split("/")[2];
+      try {
+        const restored = store.rollback(slug);
+        if (!restored) {
+          json(res, 404, { error: `No versions to roll back for: ${slug}` });
+        } else {
+          json(res, 200, { restored });
+        }
+      } catch (err) {
+        json(res, 400, { error: String(err) });
+      }
       return;
     }
 

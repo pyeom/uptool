@@ -23,6 +23,18 @@ export interface Config {
   cert_file?: string;
   /** Path to TLS private key file (PEM). Optional — enables HTTPS if set with cert_file. */
   key_file?: string;
+  /**
+   * Per-IP request cap for the public server, in requests per minute.
+   * 0 = disabled (default). Leave off when behind a reverse proxy / tunnel that
+   * collapses every visitor to one source IP — set `trust_proxy` instead.
+   */
+  rate_limit_rpm: number;
+  /**
+   * Trust the X-Forwarded-For header for the client IP (rate limiting).
+   * Only enable behind a proxy you control (e.g. Cloudflare Tunnel); otherwise
+   * clients can spoof their IP. Default false.
+   */
+  trust_proxy: boolean;
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -36,6 +48,8 @@ export const DEFAULT_CONFIG: Config = {
   csp: "default-src 'self' 'unsafe-inline' 'unsafe-eval' *; img-src * data: blob:;",
   live_reload: true,
   max_versions: 5,
+  rate_limit_rpm: 0,
+  trust_proxy: false,
 };
 
 export function configDir(): string {

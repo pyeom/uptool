@@ -40,9 +40,41 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
+/** Allowed Host header values for the internal API (loopback only). */
+function isAllowedApiHost(host: string): boolean {
+  const name = host.split(":")[0];
+  return name === "127.0.0.1" || name === "localhost" || name === "[::1]";
+}
+
 export function createApiServer(config: Config, store: ManifestStore): http.Server {
   return http.createServer(async (req, res) => {
+    try {
+      await handleApiRequest(req, res, config, store);
+    } catch (err) {
+      // Never let a handler error crash the daemon.
+      if (!res.headersSent) json(res, 500, { error: String(err) });
+      else res.end();
+    }
+  });
+}
+
+async function handleApiRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  config: Config,
+  store: ManifestStore
+): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
+
+    // Reject requests whose Host header is not loopback. The API binds to
+    // 127.0.0.1, but that alone does NOT stop DNS-rebinding: a malicious web
+    // page can resolve its own domain to 127.0.0.1 and POST here from the
+    // user's browser. Validating Host closes that hole — rebind attacks carry
+    // the attacker's hostname, not a loopback name.
+    if (!isAllowedApiHost(req.headers.host ?? "")) {
+      json(res, 403, { error: "Forbidden host" });
+      return;
+    }
 
     // ------------------------------------------------------------------
     // POST /deploy — create or update a deployment
@@ -154,5 +186,4 @@ export function createApiServer(config: Config, store: ManifestStore): http.Serv
     }
 
     json(res, 404, { error: "Not found" });
-  });
 }

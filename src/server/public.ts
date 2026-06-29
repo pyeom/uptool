@@ -20,6 +20,48 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * Fixed-window per-IP rate limiter. Dependency-free; memory is bounded by
+ * pruning expired windows. `limit <= 0` disables it (always allows).
+ */
+export class RateLimiter {
+  private readonly hits = new Map<string, { count: number; reset: number }>();
+  private readonly windowMs = 60_000;
+
+  constructor(private readonly limit: number) {}
+
+  /** Record a hit for `ip`; returns false once the per-minute limit is exceeded. */
+  allow(ip: string): boolean {
+    if (this.limit <= 0) return true;
+    const now = Date.now();
+    const rec = this.hits.get(ip);
+    if (!rec || now >= rec.reset) {
+      this.hits.set(ip, { count: 1, reset: now + this.windowMs });
+      return true;
+    }
+    rec.count++;
+    return rec.count <= this.limit;
+  }
+
+  /** Drop expired windows so the map can't grow without bound. */
+  prune(): void {
+    const now = Date.now();
+    for (const [ip, rec] of this.hits) {
+      if (now >= rec.reset) this.hits.delete(ip);
+    }
+  }
+}
+
+/** Resolve the client IP, honoring X-Forwarded-For only when proxy is trusted. */
+function clientIp(req: http.IncomingMessage, trustProxy: boolean): string {
+  if (trustProxy) {
+    const xff = req.headers["x-forwarded-for"];
+    const raw = Array.isArray(xff) ? xff[0] : xff;
+    if (raw) return raw.split(",")[0].trim();
+  }
+  return req.socket.remoteAddress ?? "unknown";
+}
+
 /** Extract the subdomain slug from the Host header. Returns null if not a valid subdomain. */
 function extractSlug(host: string, baseUrl: string): string | null {
   const base = baseUrl.replace(/^https?:\/\//, "");
@@ -111,18 +153,51 @@ function handleRequest(
  * If `config.cert_file` and `config.key_file` are both set, returns an HTTPS server.
  */
 export function createPublicServer(config: Config, store: ManifestStore): http.Server {
+  const limiter = new RateLimiter(config.rate_limit_rpm);
+
   const handler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
-    handleRequest(req, res, config, store);
+    try {
+      if (!limiter.allow(clientIp(req, config.trust_proxy))) {
+        res.writeHead(429, { "Content-Type": "text/plain", "Retry-After": "60" });
+        res.end("Too Many Requests");
+        return;
+      }
+      handleRequest(req, res, config, store);
+    } catch (err) {
+      // A throw here (e.g. EACCES reading a file) must not take down the daemon.
+      if (!res.headersSent) {
+        sendErrorPage(res, 500, config, "Internal server error");
+      } else {
+        res.end();
+      }
+    }
   };
 
+  let server: http.Server;
   if (config.cert_file && config.key_file) {
     const serverOptions: https.ServerOptions = {
       cert: fs.readFileSync(config.cert_file),
       key: fs.readFileSync(config.key_file),
     };
     // https.Server extends http.Server — cast is safe
-    return https.createServer(serverOptions, handler) as unknown as http.Server;
+    server = https.createServer(serverOptions, handler) as unknown as http.Server;
+  } else {
+    server = http.createServer(handler);
   }
 
-  return http.createServer(handler);
+  // Bound slow/abusive connections. Defaults leave the door open to slowloris
+  // when this server faces the public internet.
+  server.requestTimeout = 30_000; // whole request must complete in 30s
+  server.headersTimeout = 10_000; // headers must arrive within 10s
+  server.keepAliveTimeout = 5_000;
+  server.timeout = 60_000; // hard socket inactivity cap
+
+  // Prune the rate-limiter map periodically; unref so it never blocks exit.
+  if (config.rate_limit_rpm > 0) {
+    const t = setInterval(() => limiter.prune(), 60_000);
+    t.unref();
+    server.on("close", () => clearInterval(t));
+  }
+
+  return server;
 }

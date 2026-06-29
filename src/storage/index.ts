@@ -135,7 +135,12 @@ export function loadManifest(storageDir: string): Manifest {
 }
 
 function saveManifestSync(storageDir: string, manifest: Manifest): void {
-  fs.writeFileSync(manifestPath(storageDir), JSON.stringify(manifest, null, 2));
+  // Atomic write: dump to a temp file then rename. A crash mid-write leaves the
+  // old manifest intact instead of a truncated/corrupt JSON file.
+  const target = manifestPath(storageDir);
+  const tmp = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(manifest, null, 2));
+  fs.renameSync(tmp, target);
 }
 
 export function ensureStorageDir(storageDir: string): string {

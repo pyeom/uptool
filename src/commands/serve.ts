@@ -82,6 +82,35 @@ export function serveCommand(opts: { foreground?: boolean }): void {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
+  // Last-resort guards. Request handlers already catch their own errors, so a
+  // throw reaching here is unexpected — log it, persist state, but keep the
+  // daemon alive rather than dropping every live deployment.
+  process.on("uncaughtException", (err) => {
+    console.error(`[uptool] uncaughtException: ${err?.stack ?? err}`);
+    store.flushNow();
+  });
+  process.on("unhandledRejection", (reason) => {
+    console.error(`[uptool] unhandledRejection: ${String(reason)}`);
+  });
+
+  // Surface bind failures (e.g. port already in use) with a clear message
+  // instead of an opaque stack trace, then exit.
+  function onListenError(label: string, port: number) {
+    return (err: NodeJS.ErrnoException): void => {
+      if (err.code === "EADDRINUSE") {
+        console.error(`[uptool] ${label} port ${port} already in use.`);
+      } else if (err.code === "EACCES") {
+        console.error(`[uptool] ${label} port ${port} requires elevated privileges.`);
+      } else {
+        console.error(`[uptool] ${label} failed to listen: ${err.message}`);
+      }
+      process.exit(1);
+    };
+  }
+
+  publicServer.on("error", onListenError("public server", config.port));
+  apiServer.on("error", onListenError("API server", config.api_port));
+
   publicServer.listen(config.port, () => {
     console.log(`Public server listening on port ${config.port}`);
   });

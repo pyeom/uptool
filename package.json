@@ -7,13 +7,25 @@
     "uptool": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "README.md"
   ],
+  "author": "pyeom",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pyeom/uptool.git"
+  },
+  "homepage": "https://github.com/pyeom/uptool#readme",
+  "bugs": {
+    "url": "https://github.com/pyeom/uptool/issues"
+  },
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
     "commander": "^12.1.0",

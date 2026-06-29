@@ -23,6 +23,42 @@ npm install -g uptool
 npx uptool <command>
 ```
 
+### Manual installation (from source)
+
+Build and install from the repository — useful for trying unreleased changes or contributing:
+
+```bash
+# 1. Clone
+git clone https://github.com/pyeom/uptool.git
+cd uptool
+
+# 2. Install dependencies
+npm install
+
+# 3. Build (compiles src/ → dist/cli.js)
+npm run build
+
+# 4a. Link it as a global `uptool` command…
+npm link
+
+# 4b. …or run directly without linking:
+node dist/cli.js <command>
+```
+
+Verify it works:
+
+```bash
+uptool --version
+```
+
+To remove a linked build later:
+
+```bash
+npm unlink -g uptool
+```
+
+> Requires Node.js ≥ 18.
+
 ---
 
 ## Prerequisites

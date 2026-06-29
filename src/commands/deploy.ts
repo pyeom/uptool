@@ -20,7 +20,7 @@ function walkDir(dir: string, baseDir: string): Array<{ rel: string; full: strin
     if (entry.name.startsWith(".")) continue;
     if (entry.name === "node_modules") continue;
     const full = path.join(dir, entry.name);
-    const rel = path.relative(baseDir, full).replace(/\\/g, "/"); // normalise separators
+    const rel = path.relative(baseDir, full).replace(/\\/g, "/");
     if (entry.isDirectory()) {
       results.push(...walkDir(full, baseDir));
     } else {
@@ -30,33 +30,28 @@ function walkDir(dir: string, baseDir: string): Array<{ rel: string; full: strin
   return results;
 }
 
-export async function deployCommand(
-  filePath: string | undefined,
-  opts: { update?: string; name?: string }
-): Promise<void> {
-  const config = loadConfig();
-
-  let body: Record<string, unknown>;
-
+async function buildBody(
+  filePath: string | undefined
+): Promise<Record<string, unknown>> {
   if (!filePath) {
-    // No path → read from stdin (single HTML)
     const html = await readStdin();
     if (!html.trim()) {
       console.error("No content provided.");
       process.exit(1);
     }
-    body = { html, filename: "stdin.html" };
+    return { html, filename: "stdin.html" };
+  }
 
-  } else if (!fs.existsSync(filePath)) {
+  if (!fs.existsSync(filePath)) {
     console.error(`Not found: ${filePath}`);
     process.exit(1);
-    return;
+    return {};
+  }
 
-  } else if (fs.statSync(filePath).isDirectory()) {
-    // Directory → bundle
+  if (fs.statSync(filePath).isDirectory()) {
     const entries = walkDir(filePath, filePath);
     if (entries.length === 0) {
-      console.error("Directory is empty.");
+      console.error(`Directory is empty: ${filePath}`);
       process.exit(1);
     }
 
@@ -69,50 +64,69 @@ export async function deployCommand(
       files[rel] = fs.readFileSync(full).toString("base64");
     }
 
-    // Determine entry point
     let entry = "index.html";
     if (!files["index.html"]) {
       const htmlFiles = Object.keys(files).filter((p) => p.endsWith(".html") && !p.includes("/"));
       if (htmlFiles.length === 1) {
         entry = htmlFiles[0];
       } else if (htmlFiles.length === 0) {
-        console.error("No HTML files found in directory (top-level).");
+        console.error(`No HTML files found in directory (top-level): ${filePath}`);
         process.exit(1);
       } else {
         console.error(
-          `Multiple HTML files found at root level with no index.html. Add an index.html or use --update with a specific file.`
+          `Multiple HTML files found at root level with no index.html: ${filePath}`
         );
         process.exit(1);
       }
     }
 
-    body = { files, entry, filename: path.basename(path.resolve(filePath)) };
-
-  } else {
-    // Single file
-    const html = fs.readFileSync(filePath, "utf8");
-    body = { html, filename: path.basename(filePath) };
+    return { files, entry, filename: path.basename(path.resolve(filePath)) };
   }
 
-  if (opts.update) body.slug = opts.update;
-  if (opts.name) body.name = opts.name;
+  const html = fs.readFileSync(filePath, "utf8");
+  return { html, filename: path.basename(filePath) };
+}
 
-  try {
-    const result = await callApi<{ slug?: string; error?: string }>(
-      config.api_port,
-      "POST",
-      "/deploy",
-      body
-    );
-    if (result.error) throw new Error(result.error);
-    // For updates the server returns the (possibly resolved) slug
-    const slug = result.slug ?? (opts.update as string);
-    const url = publicUrl(config, slug);
-    const ttlMs = parseTtlMs(config.ttl);
-    const expiry = ttlMs > 0 ? `  (expires in ${config.ttl})` : "";
-    console.log(`✓ ${url}${expiry}`);
-  } catch (err) {
-    console.error(`Error: ${(err as Error).message}`);
+export async function deployCommand(
+  filePaths: string[],
+  opts: { update?: string; name?: string }
+): Promise<void> {
+  const config = loadConfig();
+
+  const multi = filePaths.length > 1;
+  if (multi && (opts.update || opts.name)) {
+    console.error("--update and --name are not supported when deploying multiple files.");
     process.exit(1);
   }
+
+  const targets = filePaths.length === 0 ? [undefined] : filePaths;
+  const ttlMs = parseTtlMs(config.ttl);
+  const expiry = ttlMs > 0 ? `  (expires in ${config.ttl})` : "";
+
+  let anyError = false;
+
+  for (const filePath of targets) {
+    const body = await buildBody(filePath);
+
+    if (!opts.update && opts.name) body.name = opts.name;
+    if (opts.update) body.slug = opts.update;
+
+    try {
+      const result = await callApi<{ slug?: string; error?: string }>(
+        config.api_port,
+        "POST",
+        "/deploy",
+        body
+      );
+      if (result.error) throw new Error(result.error);
+      const slug = result.slug ?? (opts.update as string);
+      const url = publicUrl(config, slug);
+      console.log(`✓ ${url}${expiry}`);
+    } catch (err) {
+      console.error(`Error deploying ${filePath ?? "stdin"}: ${(err as Error).message}`);
+      anyError = true;
+    }
+  }
+
+  if (anyError) process.exit(1);
 }

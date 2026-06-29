@@ -36,13 +36,13 @@ program
   .action((opts) => serveCommand(opts));
 
 program
-  .command("deploy [file]")
+  .command("deploy [files...]")
   .description(
-    "Deploy an HTML file, directory bundle, or stdin — prints the public URL"
+    "Deploy HTML file(s), directory bundle(s), or stdin — prints the public URL(s)"
   )
-  .option("-u, --update <slug>", "Update an existing deployment by slug or name")
-  .option("-n, --name <name>", "Assign a stable named slug (e.g. 'dashboard')")
-  .action((file, opts) => deployCommand(file, opts));
+  .option("-u, --update <slug>", "Update an existing deployment by slug or name (single file only)")
+  .option("-n, --name <name>", "Assign a stable named slug (single file only)")
+  .action((files, opts) => deployCommand(files, opts));
 
 program
   .command("list")

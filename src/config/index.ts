@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import * as crypto from "node:crypto";
 import { parse, stringify } from "smol-toml";
 
 export interface Config {
@@ -13,6 +14,10 @@ export interface Config {
   scheme: string;
   /** Max request body size in bytes for the internal API. Default 10 MB. */
   max_body_bytes: number;
+  /** Max size in bytes for a single deployed file. 0 = unlimited. Default 5 MB. */
+  max_file_size: number;
+  /** Max total bytes across all deployments (storage dir). 0 = unlimited. Default 500 MB. */
+  max_total_storage: number;
   /** Content-Security-Policy header sent with served HTML. Empty string = omit. */
   csp: string;
   /** Inject live-reload WebSocket script into served HTML. Default true. */
@@ -45,6 +50,8 @@ export const DEFAULT_CONFIG: Config = {
   storage_path: path.join(os.homedir(), ".uptool", "files"),
   scheme: "http",
   max_body_bytes: 10 * 1024 * 1024, // 10 MB
+  max_file_size: 5 * 1024 * 1024, // 5 MB
+  max_total_storage: 500 * 1024 * 1024, // 500 MB
   csp: "default-src 'self' 'unsafe-inline' 'unsafe-eval' *; img-src * data: blob:;",
   live_reload: true,
   max_versions: 5,
@@ -66,6 +73,31 @@ export function pidPath(): string {
 
 export function logPath(): string {
   return path.join(configDir(), "server.log");
+}
+
+export function tokenPath(): string {
+  return path.join(configDir(), "token");
+}
+
+export function loadOrGenerateToken(): string {
+  const p = tokenPath();
+  if (fs.existsSync(p)) {
+    const existing = fs.readFileSync(p, "utf8").trim();
+    if (existing) return existing;
+  }
+  // Generate new token: 32 random bytes hex-encoded (64 chars)
+  const token = crypto.randomBytes(32).toString("hex");
+  saveToken(token);
+  return token;
+}
+
+export function saveToken(token: string): void {
+  const dir = configDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const p = tokenPath();
+  fs.writeFileSync(p, token, { mode: 0o600 });
+  // writeFileSync's mode only applies on create — enforce on overwrite too
+  fs.chmodSync(p, 0o600);
 }
 
 export function loadConfig(): Config {

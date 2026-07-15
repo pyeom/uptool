@@ -92,6 +92,8 @@ ttl = "72h"        # file expiry — 0 = never
 storage_path = "~/.uptool/files"
 
 # Optional
+max_file_size = 5242880        # max bytes per deployed file (0 = unlimited, default 5 MB)
+max_total_storage = 524288000  # max bytes across all deployments (0 = unlimited, default 500 MB)
 rate_limit_rpm = 0     # per-IP requests/min on the public server (0 = off)
 trust_proxy = false    # read X-Forwarded-For for client IP (only behind a proxy you control)
 # cert_file = "/path/fullchain.pem"   # enables HTTPS when set with key_file
@@ -159,9 +161,25 @@ uptool rm x7k2mq
 ### Daemon control
 
 ```bash
-uptool stop      # stop the daemon
-uptool status    # check if running + last 10 log lines
+uptool stop           # stop the daemon
+uptool status         # check if running + last 10 log lines
+uptool status --json  # machine-readable health for monitoring (exit 1 if unhealthy)
 ```
+
+### Run as a systemd service (Linux)
+
+Survives reboots and restarts on failure:
+
+```bash
+uptool install-service
+systemctl --user daemon-reload
+systemctl --user enable --now uptool
+
+# start on boot without logging in:
+loginctl enable-linger $USER
+```
+
+Point Uptime Kuma (or any monitor) at a cron job running `uptool status --json` — it exits non-zero when the daemon or API is down.
 
 ---
 
@@ -208,9 +226,9 @@ uptool serves files from **your** machine on **your** domain, reachable by anyon
 - **Anything you deploy is public.** There is no login wall on served pages. Anyone with the URL can view the content. Don't deploy secrets, credentials, or private data.
 - **Slugs are unguessable; names are not.** Random slugs (`x7k2mq`) are 8 chars of crypto-random base36 — not enumerable. But a named deployment (`--name dashboard`) is trivially guessable (`dashboard.yourdomain`). Use names only for content you're fine exposing.
 - **You are responsible for what you host.** Serving content on your domain makes you the publisher of it. Don't deploy untrusted HTML you wouldn't stand behind.
-- **The internal API is loopback-only and Host-checked.** It binds to `127.0.0.1` and rejects any request whose `Host` isn't a loopback name, which blocks DNS-rebinding attacks from the browser. It has no auth token — on a multi-user machine, any local user can reach it, so don't run the daemon on a shared host you don't trust.
+- **The internal API is protected with a bearer token.** It binds to `127.0.0.1` and checks the `Authorization: Bearer <token>` header. The token is stored in `~/.uptool/token` (mode 0600, readable by your user only) and generated during `uptool init`. All CLI commands read this token and pass it to the daemon.
 - **Use HTTPS for anything real.** Set `cert_file`/`key_file` (certs for your own domain), or terminate TLS at a proxy such as Cloudflare Tunnel. Plain HTTP sends content — and the live-reload socket — in the clear.
-- **Abuse controls.** The public server sets request/header/idle timeouts by default. For raw internet exposure you can also set `rate_limit_rpm`. Behind a proxy/tunnel, set `trust_proxy = true` so the limit keys off the real visitor IP instead of the proxy.
+- **Abuse controls.** The public server sets request/header/idle timeouts by default. Deploys are capped by `max_file_size` (5 MB) and `max_total_storage` (500 MB) so a looping LLM can't fill your disk. For raw internet exposure you can also set `rate_limit_rpm`. Behind a proxy/tunnel, set `trust_proxy = true` so the limit keys off the real visitor IP instead of the proxy.
 
 Found a vulnerability? Open an issue at https://github.com/pyeom/uptool/issues (or mark it security-sensitive).
 

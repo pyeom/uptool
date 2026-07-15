@@ -3,12 +3,23 @@
  * Extracted from deploy.ts / mcp.ts to avoid duplication.
  */
 import * as http from "node:http";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 
 export class ApiError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ApiError";
   }
+}
+
+function getToken(): string {
+  const p = path.join(os.homedir(), ".uptool", "token");
+  if (!fs.existsSync(p)) {
+    throw new ApiError("Auth token not found. Run: uptool init");
+  }
+  return fs.readFileSync(p, "utf8").trim();
 }
 
 export function callApi<T = unknown>(
@@ -19,17 +30,16 @@ export function callApi<T = unknown>(
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : undefined;
+    const token = getToken();
     const options: http.RequestOptions = {
       hostname: "127.0.0.1",
       port,
       path: urlPath,
       method,
-      headers: payload
-        ? {
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(payload),
-          }
-        : {},
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        ...(payload ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } : {}),
+      },
     };
 
     const req = http.request(options, (res) => {

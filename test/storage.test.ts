@@ -347,4 +347,127 @@ describe("ManifestStore", () => {
     // Old flat file should be gone
     expect(fs.existsSync(path.join(tmpDir, `${fakeSlug}.html`))).toBe(false);
   });
+
+  // -------------------------------------------------------------------------
+  // Storage limits (max_file_size / max_total_storage)
+  // -------------------------------------------------------------------------
+
+  describe("storage limits", () => {
+    it("rejects a single HTML file over max_file_size", () => {
+      const limited = new ManifestStore(tmpDir + "-lim1", {
+        ...storeOpts,
+        max_file_size: 100,
+      });
+      const big = "x".repeat(200);
+      expect(() =>
+        limited.store(big, null, "index.html", "big.html")
+      ).toThrow(/max_file_size/);
+      fs.rmSync(tmpDir + "-lim1", { recursive: true });
+    });
+
+    it("rejects a bundle file over max_file_size", () => {
+      const limited = new ManifestStore(tmpDir + "-lim2", {
+        ...storeOpts,
+        max_file_size: 100,
+      });
+      const files = {
+        "index.html": Buffer.from("<h1>ok</h1>").toString("base64"),
+        "big.bin": Buffer.from("y".repeat(200)).toString("base64"),
+      };
+      expect(() =>
+        limited.store(null, files, "index.html", "site")
+      ).toThrow(/big\.bin/);
+      fs.rmSync(tmpDir + "-lim2", { recursive: true });
+    });
+
+    it("rejects deploys once max_total_storage is exceeded", () => {
+      const dir = tmpDir + "-lim3";
+      const limited = new ManifestStore(dir, {
+        ...storeOpts,
+        max_total_storage: 300,
+      });
+      limited.store("a".repeat(200), null, "index.html", "a.html");
+      expect(() =>
+        limited.store("b".repeat(200), null, "index.html", "b.html")
+      ).toThrow(/max_total_storage/);
+      fs.rmSync(dir, { recursive: true });
+    });
+
+    it("allows deploys again after removing content", () => {
+      const dir = tmpDir + "-lim4";
+      const limited = new ManifestStore(dir, {
+        ...storeOpts,
+        max_total_storage: 300,
+      });
+      const slug = limited.store("a".repeat(200), null, "index.html", "a.html");
+      limited.remove(slug);
+      expect(() =>
+        limited.store("b".repeat(200), null, "index.html", "b.html")
+      ).not.toThrow();
+      fs.rmSync(dir, { recursive: true });
+    });
+
+    it("writes nothing to disk when a limit rejects the deploy", () => {
+      const dir = tmpDir + "-lim5";
+      const limited = new ManifestStore(dir, {
+        ...storeOpts,
+        max_file_size: 100,
+      });
+      try {
+        limited.store("x".repeat(200), null, "index.html", "big.html");
+      } catch {
+        // expected
+      }
+      // Storage dir must contain no slug directories
+      const entries = fs.readdirSync(dir).filter((e) => e !== "manifest.json");
+      expect(entries).toEqual([]);
+      fs.rmSync(dir, { recursive: true });
+    });
+
+    it("applies limits on update too", () => {
+      const dir = tmpDir + "-lim6";
+      const limited = new ManifestStore(dir, {
+        ...storeOpts,
+        max_file_size: 100,
+      });
+      const slug = limited.store("<h1>v1</h1>", null, "index.html", "t.html");
+      expect(() =>
+        limited.update(slug, "x".repeat(200), null, "index.html", "t.html")
+      ).toThrow(/max_file_size/);
+      // Original content untouched
+      expect(limited.readFile(slug, "/")!.buffer.toString()).toBe("<h1>v1</h1>");
+      fs.rmSync(dir, { recursive: true });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Atomic manifest persistence
+  // -------------------------------------------------------------------------
+
+  describe("manifest atomicity", () => {
+    it("flushNow writes valid JSON and leaves no temp files", () => {
+      store.store("<h1>A</h1>", null, "index.html", "a.html");
+      store.flushNow();
+
+      const manifestFile = path.join(store.storageDir, "manifest.json");
+      expect(fs.existsSync(manifestFile)).toBe(true);
+      // Parses cleanly
+      const parsed = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+      expect(Object.keys(parsed).length).toBe(1);
+      // No leftover .tmp files from the write-then-rename
+      const leftovers = fs.readdirSync(store.storageDir).filter((f) => f.endsWith(".tmp"));
+      expect(leftovers).toEqual([]);
+    });
+
+    it("keeps the previous manifest intact if a stale temp file exists", () => {
+      store.store("<h1>A</h1>", null, "index.html", "a.html");
+      store.flushNow();
+      // Simulate a crash that left a corrupt temp file behind
+      fs.writeFileSync(path.join(store.storageDir, "manifest.json.999.tmp"), "{corrupt");
+
+      // Reload — must read the good manifest, not the temp file
+      const s2 = new ManifestStore(store.storageDir, storeOpts);
+      expect(s2.list().length).toBe(1);
+    });
+  });
 });

@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as child_process from "node:child_process";
-import { loadConfig, configDir, pidPath, logPath } from "../config/index.js";
+import { loadConfig, configDir, pidPath, logPath, loadOrGenerateToken } from "../config/index.js";
 import { createApiServer } from "../server/api.js";
 import { createPublicServer } from "../server/public.js";
 import { WsManager } from "../server/ws.js";
@@ -46,10 +46,15 @@ export function serveCommand(opts: { foreground?: boolean }): void {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(pidPath(), String(process.pid));
 
+  // Ensure token exists (or generate if missing)
+  const token = loadOrGenerateToken();
+
   // Initialise in-memory manifest store (single owner of all state)
   const store = new ManifestStore(config.storage_path, {
     ttl: config.ttl,
     max_versions: config.max_versions,
+    max_file_size: config.max_file_size,
+    max_total_storage: config.max_total_storage,
   });
 
   const expired = store.cleanExpired();
@@ -62,7 +67,7 @@ export function serveCommand(opts: { foreground?: boolean }): void {
   }, 60 * 60 * 1000);
 
   const publicServer = createPublicServer(config, store);
-  const apiServer = createApiServer(config, store);
+  const apiServer = createApiServer(config, store, token);
 
   // Live reload: attach WebSocket manager and wire store 'updated' events
   let wsManager: WsManager | null = null;

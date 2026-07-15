@@ -14,11 +14,14 @@ const TEST_CONFIG = {
   max_body_bytes: 1024, // small limit for testing
 };
 
+const TEST_TOKEN = "test-token-abc123";
+
 function apiRequest(
   server: http.Server,
   method: string,
   urlPath: string,
-  body?: unknown
+  body?: unknown,
+  token: string | null = TEST_TOKEN
 ): Promise<{ status: number; data: unknown }> {
   return new Promise((resolve, reject) => {
     const addr = server.address() as { port: number };
@@ -29,9 +32,12 @@ function apiRequest(
         port: addr.port,
         path: urlPath,
         method,
-        headers: payload
-          ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
-          : {},
+        headers: {
+          ...(token !== null ? { Authorization: `Bearer ${token}` } : {}),
+          ...(payload
+            ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
+            : {}),
+        },
       },
       (res) => {
         let raw = "";
@@ -61,7 +67,7 @@ describe("API server", () => {
       new Promise<void>((resolve) => {
         tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "uptool-api-"));
         store = new ManifestStore(tmpDir, { ttl: "72h", max_versions: 5 });
-        server = createApiServer(TEST_CONFIG, store);
+        server = createApiServer(TEST_CONFIG, store, TEST_TOKEN);
         server.listen(0, "127.0.0.1", resolve);
       })
   );
@@ -76,6 +82,31 @@ describe("API server", () => {
         });
       })
   );
+
+  // -------------------------------------------------------------------------
+  // Auth
+  // -------------------------------------------------------------------------
+
+  it("rejects requests without a token", async () => {
+    const { status } = await apiRequest(server, "GET", "/files", undefined, null);
+    expect(status).toBe(401);
+  });
+
+  it("rejects requests with a wrong token", async () => {
+    const { status } = await apiRequest(server, "GET", "/files", undefined, "wrong-token");
+    expect(status).toBe(401);
+  });
+
+  it("rejects deploy without a token", async () => {
+    const { status } = await apiRequest(
+      server,
+      "POST",
+      "/deploy",
+      { html: "<h1>x</h1>" },
+      null
+    );
+    expect(status).toBe(401);
+  });
 
   // -------------------------------------------------------------------------
   // POST /deploy
@@ -152,6 +183,29 @@ describe("API server", () => {
     const big = "x".repeat(2000); // over the 1024 test limit
     const { status } = await apiRequest(server, "POST", "/deploy", { html: big });
     expect(status).toBe(413);
+  });
+
+  it("returns 413 when a file exceeds max_file_size", async () => {
+    const tmpDir2 = fs.mkdtempSync(path.join(os.tmpdir(), "uptool-api-lim-"));
+    const limitedStore = new ManifestStore(tmpDir2, {
+      ttl: "72h",
+      max_versions: 5,
+      max_file_size: 100,
+    });
+    const limitedServer = createApiServer(TEST_CONFIG, limitedStore, TEST_TOKEN);
+    await new Promise<void>((resolve) => limitedServer.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const { status, data } = await apiRequest(limitedServer, "POST", "/deploy", {
+        html: "x".repeat(500),
+      });
+      expect(status).toBe(413);
+      expect((data as { error: string }).error).toContain("max_file_size");
+    } finally {
+      limitedStore.flushNow();
+      await new Promise<void>((resolve) => limitedServer.close(() => resolve()));
+      fs.rmSync(tmpDir2, { recursive: true });
+    }
   });
 
   // -------------------------------------------------------------------------

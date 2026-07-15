@@ -143,6 +143,18 @@ function saveManifestSync(storageDir: string, manifest: Manifest): void {
   fs.renameSync(tmp, target);
 }
 
+/** Recursively sum file sizes under a directory. Missing dir = 0. */
+export function dirSize(dir: string): number {
+  if (!fs.existsSync(dir)) return 0;
+  let total = 0;
+  for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, item.name);
+    if (item.isDirectory()) total += dirSize(full);
+    else if (item.isFile()) total += fs.statSync(full).size;
+  }
+  return total;
+}
+
 export function ensureStorageDir(storageDir: string): string {
   const resolved = resolvePath(storageDir);
   if (!fs.existsSync(resolved)) fs.mkdirSync(resolved, { recursive: true });
@@ -177,15 +189,26 @@ export class ManifestStore extends EventEmitter {
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly ttl: string;
   private readonly maxVersions: number;
+  /** Per-file size cap in bytes. 0 = unlimited. */
+  private readonly maxFileSize: number;
+  /** Total storage-dir cap in bytes. 0 = unlimited. */
+  private readonly maxTotalStorage: number;
 
   constructor(
     storageDir: string,
-    options: { ttl: string; max_versions: number }
+    options: {
+      ttl: string;
+      max_versions: number;
+      max_file_size?: number;
+      max_total_storage?: number;
+    }
   ) {
     super();
     this.storageDir = ensureStorageDir(storageDir);
     this.ttl = options.ttl;
     this.maxVersions = options.max_versions;
+    this.maxFileSize = options.max_file_size ?? 0;
+    this.maxTotalStorage = options.max_total_storage ?? 0;
     this.manifest = loadManifest(this.storageDir);
     // Back-fill missing 'entry' field from legacy single-file deployments
     for (const [slug, entry] of Object.entries(this.manifest)) {
@@ -291,6 +314,8 @@ export class ManifestStore extends EventEmitter {
       }
     }
 
+    this._checkLimits(html, files);
+
     const slug = generateSlug(this.manifest);
     const slugDir = path.join(this.storageDir, slug);
     fs.mkdirSync(slugDir, { recursive: true });
@@ -325,6 +350,8 @@ export class ManifestStore extends EventEmitter {
   ): string {
     const slug = this.resolveSlug(slugOrName);
     if (!slug) throw new Error(`Slug not found: ${slugOrName}`);
+
+    this._checkLimits(html, files);
 
     const existing = this.manifest[slug];
     const slugDir = path.join(this.storageDir, slug);
@@ -503,6 +530,61 @@ export class ManifestStore extends EventEmitter {
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
+
+  /**
+   * Enforce per-file and total-storage limits before writing anything.
+   * Throws with code "FILE_TOO_LARGE" or "QUOTA_EXCEEDED".
+   */
+  private _checkLimits(
+    html: string | null,
+    files: Record<string, string> | null
+  ): void {
+    if (this.maxFileSize <= 0 && this.maxTotalStorage <= 0) return;
+
+    const fmt = (n: number) =>
+      n >= 1024 * 1024
+        ? `${(n / (1024 * 1024)).toFixed(1)} MB`
+        : n >= 1024
+          ? `${(n / 1024).toFixed(1)} KB`
+          : `${n} B`;
+    let incoming = 0;
+
+    if (html !== null) {
+      const size = Buffer.byteLength(stripMarkdownFences(html), "utf8");
+      if (this.maxFileSize > 0 && size > this.maxFileSize) {
+        const err = new Error(
+          `File too large: ${fmt(size)} exceeds max_file_size (${fmt(this.maxFileSize)})`
+        ) as NodeJS.ErrnoException;
+        err.code = "FILE_TOO_LARGE";
+        throw err;
+      }
+      incoming = size;
+    } else if (files) {
+      for (const [relPath, base64Content] of Object.entries(files)) {
+        // Decoded size from base64 length — avoids decoding just to measure
+        const size = Math.floor((base64Content.length * 3) / 4);
+        if (this.maxFileSize > 0 && size > this.maxFileSize) {
+          const err = new Error(
+            `File too large: "${relPath}" is ${fmt(size)}, exceeds max_file_size (${fmt(this.maxFileSize)})`
+          ) as NodeJS.ErrnoException;
+          err.code = "FILE_TOO_LARGE";
+          throw err;
+        }
+        incoming += size;
+      }
+    }
+
+    if (this.maxTotalStorage > 0) {
+      const used = dirSize(this.storageDir);
+      if (used + incoming > this.maxTotalStorage) {
+        const err = new Error(
+          `Storage quota exceeded: ${fmt(used)} used + ${fmt(incoming)} incoming exceeds max_total_storage (${fmt(this.maxTotalStorage)}). Remove old deployments with: uptool rm <slug>`
+        ) as NodeJS.ErrnoException;
+        err.code = "QUOTA_EXCEEDED";
+        throw err;
+      }
+    }
+  }
 
   private _writeBundleFiles(
     slugDir: string,

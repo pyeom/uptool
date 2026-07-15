@@ -6,6 +6,7 @@ import { listCommand } from "./commands/list.js";
 import { rmCommand } from "./commands/rm.js";
 import { stopCommand } from "./commands/stop.js";
 import { statusCommand } from "./commands/status.js";
+import { installServiceCommand } from "./commands/install-service.js";
 import { openCommand } from "./commands/open.js";
 import { rollbackCommand } from "./commands/rollback.js";
 import { mcpCommand } from "./commands/mcp.js";
@@ -72,7 +73,13 @@ program
 program
   .command("status")
   .description("Show daemon status and recent log")
-  .action(() => statusCommand());
+  .option("--json", "Machine-readable output for monitoring (exit 1 if unhealthy)", false)
+  .action((opts) => statusCommand(opts));
+
+program
+  .command("install-service")
+  .description("Install a systemd user service (auto-restart, start on boot)")
+  .action(() => installServiceCommand());
 
 program
   .command("url")

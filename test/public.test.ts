@@ -20,12 +20,18 @@ const TEST_CONFIG = {
 function makeRequest(
   server: http.Server,
   host: string,
-  urlPath = "/"
+  urlPath = "/",
+  extraHeaders: http.OutgoingHttpHeaders = {}
 ): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const addr = server.address() as { port: number };
     const req = http.request(
-      { hostname: "127.0.0.1", port: addr.port, path: urlPath, headers: { host } },
+      {
+        hostname: "127.0.0.1",
+        port: addr.port,
+        path: urlPath,
+        headers: { host, ...extraHeaders },
+      },
       (res) => {
         let body = "";
         res.on("data", (c) => (body += c));
@@ -142,5 +148,77 @@ describe("Public server", () => {
     const { status, body } = await makeRequest(server, "myapp.test.local");
     expect(status).toBe(200);
     expect(body).toBe("<h1>Named</h1>");
+  });
+
+  // -------------------------------------------------------------------------
+  // Protected deployments (Basic Auth)
+  // -------------------------------------------------------------------------
+
+  describe("protected deployments", () => {
+    const basic = (user: string, pass: string) => ({
+      Authorization: `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`,
+    });
+
+    it("returns 401 with WWW-Authenticate when no credentials", async () => {
+      const slug = store.store(
+        "<h1>Secret</h1>", null, "index.html", "s.html", undefined, "sekret"
+      );
+      const { status, headers, body } = await makeRequest(server, `${slug}.test.local`);
+      expect(status).toBe(401);
+      expect(headers["www-authenticate"]).toContain("Basic");
+      expect(body).not.toContain("Secret");
+    });
+
+    it("returns 401 with wrong password", async () => {
+      const slug = store.store(
+        "<h1>Secret</h1>", null, "index.html", "s.html", undefined, "sekret"
+      );
+      const { status } = await makeRequest(
+        server, `${slug}.test.local`, "/", basic("u", "wrong")
+      );
+      expect(status).toBe(401);
+    });
+
+    it("serves content with correct password, any username", async () => {
+      const slug = store.store(
+        "<h1>Secret</h1>", null, "index.html", "s.html", undefined, "sekret"
+      );
+      const a = await makeRequest(server, `${slug}.test.local`, "/", basic("alice", "sekret"));
+      expect(a.status).toBe(200);
+      expect(a.body).toBe("<h1>Secret</h1>");
+      const b = await makeRequest(server, `${slug}.test.local`, "/", basic("", "sekret"));
+      expect(b.status).toBe(200);
+    });
+
+    it("protects bundle assets too", async () => {
+      const files = {
+        "index.html": Buffer.from("<h1>hi</h1>").toString("base64"),
+        "app.js": Buffer.from("console.log(1)").toString("base64"),
+      };
+      const slug = store.store(null, files, "index.html", "site", undefined, "sekret");
+      const noAuth = await makeRequest(server, `${slug}.test.local`, "/app.js");
+      expect(noAuth.status).toBe(401);
+      const withAuth = await makeRequest(
+        server, `${slug}.test.local`, "/app.js", basic("x", "sekret")
+      );
+      expect(withAuth.status).toBe(200);
+    });
+
+    it("leaves unprotected slugs open", async () => {
+      const slug = store.store("<h1>Open</h1>", null, "index.html", "o.html");
+      const { status } = await makeRequest(server, `${slug}.test.local`);
+      expect(status).toBe(200);
+    });
+
+    it("update with undefined key keeps protection; empty string removes it", async () => {
+      const slug = store.store(
+        "<h1>v1</h1>", null, "index.html", "s.html", undefined, "sekret"
+      );
+      store.update(slug, "<h1>v2</h1>", null, "index.html", "s.html");
+      expect((await makeRequest(server, `${slug}.test.local`)).status).toBe(401);
+
+      store.update(slug, "<h1>v3</h1>", null, "index.html", "s.html", "");
+      expect((await makeRequest(server, `${slug}.test.local`)).status).toBe(200);
+    });
   });
 });

@@ -17,6 +17,8 @@ export interface ManifestEntry {
   entry: string;
   /** Optional stable name (e.g. "dashboard" → dashboard.mydev.com). */
   name?: string;
+  /** Optional access key — when set, the public server requires Basic Auth. */
+  key?: string;
   /** Saved version timestamps (newest first). Used for rollback. */
   versions?: string[];
 }
@@ -298,7 +300,8 @@ export class ManifestStore extends EventEmitter {
     files: Record<string, string> | null,
     entry: string,
     filename: string,
-    name?: string
+    name?: string,
+    key?: string
   ): string {
     if (name) {
       if (!isValidName(name)) {
@@ -330,6 +333,7 @@ export class ManifestStore extends EventEmitter {
       expires: ttlMs > 0 ? now + ttlMs : 0,
       entry,
       ...(name ? { name } : {}),
+      ...(key ? { key } : {}),
     };
 
     if (name) this.nameIndex.set(name, slug);
@@ -346,7 +350,8 @@ export class ManifestStore extends EventEmitter {
     html: string | null,
     files: Record<string, string> | null,
     entry: string,
-    filename: string
+    filename: string,
+    key?: string
   ): string {
     const slug = this.resolveSlug(slugOrName);
     if (!slug) throw new Error(`Slug not found: ${slugOrName}`);
@@ -368,16 +373,37 @@ export class ManifestStore extends EventEmitter {
 
     const ttlMs = parseTtlMs(this.ttl);
     const now = Date.now();
+    // key semantics: undefined = keep existing, "" = remove protection
+    const newKey = key === undefined ? existing.key : key || undefined;
     this.manifest[slug] = {
       ...existing,
       filename,
       expires: ttlMs > 0 ? now + ttlMs : 0,
       entry,
+      key: newKey,
     };
+    if (newKey === undefined) delete this.manifest[slug].key;
 
     this.scheduleFlush();
     this.emit("updated", slug);
     return slug;
+  }
+
+  /**
+   * Renew a deployment's expiry without redeploying.
+   * `ttl` accepts the config format ("7d", "72h", "30m", "0" = never);
+   * falls back to the store's default TTL when omitted.
+   * Returns the new expiry (epoch ms, 0 = never), or null if not found.
+   */
+  touch(slugOrName: string, ttl?: string): { slug: string; expires: number } | null {
+    const slug = this.resolveSlug(slugOrName);
+    if (!slug) return null;
+
+    const ttlMs = parseTtlMs(ttl ?? this.ttl);
+    const expires = ttlMs > 0 ? Date.now() + ttlMs : 0;
+    this.manifest[slug].expires = expires;
+    this.scheduleFlush();
+    return { slug, expires };
   }
 
   /** Remove a deployment by slug or name. Returns false if not found. */

@@ -265,6 +265,68 @@ describe("API server", () => {
   });
 
   // -------------------------------------------------------------------------
+  // POST /files/:slug/touch
+  // -------------------------------------------------------------------------
+
+  it("touch renews expiry", async () => {
+    const slug = store.store("<p>t</p>", null, "index.html", "t.html");
+    const before = store.getEntry(slug)!.expires;
+    const { status, data } = await apiRequest(server, "POST", `/files/${slug}/touch`, {
+      ttl: "7d",
+    });
+    expect(status).toBe(200);
+    expect((data as { expires: number }).expires).toBeGreaterThan(before);
+  });
+
+  it("touch with ttl 0 sets never-expire", async () => {
+    const slug = store.store("<p>t</p>", null, "index.html", "t.html");
+    const { status, data } = await apiRequest(server, "POST", `/files/${slug}/touch`, {
+      ttl: "0",
+    });
+    expect(status).toBe(200);
+    expect((data as { expires: number }).expires).toBe(0);
+  });
+
+  it("touch returns 404 for unknown slug", async () => {
+    const { status } = await apiRequest(server, "POST", "/files/nothere1/touch", {
+      ttl: "7d",
+    });
+    expect(status).toBe(404);
+  });
+
+  it("touch returns 400 on invalid ttl", async () => {
+    const slug = store.store("<p>t</p>", null, "index.html", "t.html");
+    const { status } = await apiRequest(server, "POST", `/files/${slug}/touch`, {
+      ttl: "banana",
+    });
+    expect(status).toBe(400);
+  });
+
+  // -------------------------------------------------------------------------
+  // Protected deploys (key)
+  // -------------------------------------------------------------------------
+
+  it("stores the access key from the deploy body", async () => {
+    const { status, data } = await apiRequest(server, "POST", "/deploy", {
+      html: "<h1>secret</h1>",
+      key: "sekret",
+    });
+    expect(status).toBe(200);
+    const slug = (data as { slug: string }).slug;
+    expect(store.getEntry(slug)!.key).toBe("sekret");
+  });
+
+  it("update without key keeps existing protection", async () => {
+    const { data } = await apiRequest(server, "POST", "/deploy", {
+      html: "<h1>v1</h1>",
+      key: "sekret",
+    });
+    const slug = (data as { slug: string }).slug;
+    await apiRequest(server, "POST", "/deploy", { html: "<h1>v2</h1>", slug });
+    expect(store.getEntry(slug)!.key).toBe("sekret");
+  });
+
+  // -------------------------------------------------------------------------
   // Unknown routes
   // -------------------------------------------------------------------------
 

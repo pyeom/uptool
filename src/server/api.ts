@@ -129,6 +129,9 @@ async function handleApiRequest(
           slug?: string;
           /** Stable human-readable name (e.g. "dashboard"). */
           name?: string;
+          /** Access key — public server requires Basic Auth when set.
+           *  On update: undefined keeps the existing key, "" removes it. */
+          key?: string;
         };
 
         // Validate name if provided
@@ -157,10 +160,12 @@ async function handleApiRequest(
 
         if (parsed.slug) {
           // Update existing deployment (slug field accepts slug OR name)
-          const resolvedSlug = store.update(parsed.slug, html, files, entry, filename);
+          const resolvedSlug = store.update(
+            parsed.slug, html, files, entry, filename, parsed.key
+          );
           json(res, 200, { slug: resolvedSlug });
         } else {
-          const slug = store.store(html, files, entry, filename, parsed.name);
+          const slug = store.store(html, files, entry, filename, parsed.name, parsed.key);
           json(res, 200, { slug });
         }
       } catch (err) {
@@ -206,6 +211,35 @@ async function handleApiRequest(
           json(res, 404, { error: `No versions to roll back for: ${slug}` });
         } else {
           json(res, 200, { restored });
+        }
+      } catch (err) {
+        json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // ------------------------------------------------------------------
+    // POST /files/:slug/touch — renew expiry without redeploying
+    // ------------------------------------------------------------------
+    if (
+      req.method === "POST" &&
+      /^\/files\/[^/]+\/touch$/.test(url.pathname)
+    ) {
+      const slug = url.pathname.split("/")[2];
+      let bodyStr: string;
+      try {
+        bodyStr = await readBody(req, config.max_body_bytes);
+      } catch (err) {
+        json(res, 400, { error: String(err) });
+        return;
+      }
+      try {
+        const parsed = bodyStr ? (JSON.parse(bodyStr) as { ttl?: string }) : {};
+        const result = store.touch(slug, parsed.ttl);
+        if (!result) {
+          json(res, 404, { error: `Slug not found: ${slug}` });
+        } else {
+          json(res, 200, result);
         }
       } catch (err) {
         json(res, 400, { error: String(err) });

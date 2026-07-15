@@ -303,6 +303,51 @@ describe("ManifestStore", () => {
   });
 
   // -------------------------------------------------------------------------
+  // touch (renewable TTL)
+  // -------------------------------------------------------------------------
+
+  describe("touch", () => {
+    it("extends expiry with an explicit ttl", () => {
+      const slug = store.store("<p>t</p>", null, "index.html", "t.html");
+      const before = store.getEntry(slug)!.expires;
+      const result = store.touch(slug, "7d");
+      expect(result).not.toBeNull();
+      expect(result!.expires).toBeGreaterThan(before);
+      expect(result!.expires).toBeGreaterThan(Date.now() + 6 * 24 * 60 * 60 * 1000);
+      expect(store.getEntry(slug)!.expires).toBe(result!.expires);
+    });
+
+    it("ttl '0' sets never-expire", () => {
+      const slug = store.store("<p>t</p>", null, "index.html", "t.html");
+      const result = store.touch(slug, "0");
+      expect(result!.expires).toBe(0);
+    });
+
+    it("falls back to the store default ttl when omitted", () => {
+      const slug = store.store("<p>t</p>", null, "index.html", "t.html");
+      const result = store.touch(slug);
+      // Default ttl is 72h
+      const expected = Date.now() + 72 * 60 * 60 * 1000;
+      expect(Math.abs(result!.expires - expected)).toBeLessThan(5000);
+    });
+
+    it("works by name", () => {
+      store.store("<p>t</p>", null, "index.html", "t.html", "myapp");
+      const result = store.touch("myapp", "7d");
+      expect(result).not.toBeNull();
+    });
+
+    it("returns null for unknown slug", () => {
+      expect(store.touch("nothere1", "7d")).toBeNull();
+    });
+
+    it("throws on invalid ttl format", () => {
+      const slug = store.store("<p>t</p>", null, "index.html", "t.html");
+      expect(() => store.touch(slug, "banana")).toThrow(/Invalid TTL/);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // cleanExpired
   // -------------------------------------------------------------------------
 

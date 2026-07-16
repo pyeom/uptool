@@ -48,6 +48,12 @@ program
     "--protect [key]",
     "Require Basic Auth to view (autogenerates a key when none is given)"
   )
+  .option("--qr", "Print a QR code for the public URL", false)
+  .option(
+    "--watch",
+    "Watch the file/directory and redeploy on change (single target only)",
+    false
+  )
   .action((files, opts) => deployCommand(files, opts));
 
 program

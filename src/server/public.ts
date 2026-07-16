@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as https from "node:https";
@@ -83,15 +84,38 @@ function sendErrorPage(
   res: http.ServerResponse,
   status: number,
   config: Config,
-  message: string
+  message: string,
+  extraHeaders: http.OutgoingHttpHeaders = {}
 ): void {
   const headers: http.OutgoingHttpHeaders = {
     "Content-Type": "text/html; charset=utf-8",
     "Cache-Control": "no-cache",
+    ...extraHeaders,
   };
   applySecurityHeaders(headers, config);
   res.writeHead(status, headers);
   res.end(`<html><body><h1>${status}</h1><p>${message}</p></body></html>`);
+}
+
+/**
+ * Check Basic Auth against a deployment's access key.
+ * Any username is accepted; the password must equal the key (constant-time).
+ */
+function basicAuthOk(req: http.IncomingMessage, key: string): boolean {
+  const header = req.headers.authorization ?? "";
+  if (!header.startsWith("Basic ")) return false;
+  let decoded: string;
+  try {
+    decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
+  } catch {
+    return false;
+  }
+  const sep = decoded.indexOf(":");
+  if (sep === -1) return false;
+  const password = Buffer.from(decoded.slice(sep + 1));
+  const expected = Buffer.from(key);
+  if (password.length !== expected.length) return false;
+  return crypto.timingSafeEqual(password, expected);
 }
 
 function handleRequest(
@@ -106,6 +130,18 @@ function handleRequest(
   if (!slugOrName) {
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(`<html><body><h1>uptool</h1><p>No slug in host: ${host}</p></body></html>`);
+    return;
+  }
+
+  // Protected deployment? Require Basic Auth before serving anything.
+  // Basic Auth (not a ?key= param) so the browser re-sends credentials on
+  // every asset request within the bundle (CSS/JS/images).
+  const resolved = store.resolveSlug(slugOrName);
+  const manifestEntry = resolved ? store.getEntry(resolved) : null;
+  if (manifestEntry?.key && !basicAuthOk(req, manifestEntry.key)) {
+    sendErrorPage(res, 401, config, "Authorization required", {
+      "WWW-Authenticate": 'Basic realm="uptool"',
+    });
     return;
   }
 

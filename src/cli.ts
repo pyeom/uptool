@@ -6,6 +6,8 @@ import { listCommand } from "./commands/list.js";
 import { rmCommand } from "./commands/rm.js";
 import { stopCommand } from "./commands/stop.js";
 import { statusCommand } from "./commands/status.js";
+import { installServiceCommand } from "./commands/install-service.js";
+import { touchCommand } from "./commands/touch.js";
 import { openCommand } from "./commands/open.js";
 import { rollbackCommand } from "./commands/rollback.js";
 import { mcpCommand } from "./commands/mcp.js";
@@ -42,7 +44,17 @@ program
   )
   .option("-u, --update <slug>", "Update an existing deployment by slug or name (single file only)")
   .option("-n, --name <name>", "Assign a stable named slug (single file only)")
+  .option(
+    "--protect [key]",
+    "Require Basic Auth to view (autogenerates a key when none is given)"
+  )
   .action((files, opts) => deployCommand(files, opts));
+
+program
+  .command("touch <slug>")
+  .description("Renew a deployment's expiry without redeploying")
+  .option("-t, --ttl <ttl>", "New TTL (e.g. 7d, 72h, 30m, 0 = never). Default: config ttl")
+  .action((slug, opts) => touchCommand(slug, opts));
 
 program
   .command("list")
@@ -72,7 +84,13 @@ program
 program
   .command("status")
   .description("Show daemon status and recent log")
-  .action(() => statusCommand());
+  .option("--json", "Machine-readable output for monitoring (exit 1 if unhealthy)", false)
+  .action((opts) => statusCommand(opts));
+
+program
+  .command("install-service")
+  .description("Install a systemd user service (auto-restart, start on boot)")
+  .action(() => installServiceCommand());
 
 program
   .command("url")

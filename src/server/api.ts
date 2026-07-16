@@ -1,4 +1,5 @@
 import * as http from "node:http";
+import * as crypto from "node:crypto";
 import { Config } from "../config/index.js";
 import { ManifestStore, stripMarkdownFences, isValidName } from "../storage/index.js";
 
@@ -46,10 +47,22 @@ function isAllowedApiHost(host: string): boolean {
   return name === "127.0.0.1" || name === "localhost" || name === "[::1]";
 }
 
-export function createApiServer(config: Config, store: ManifestStore): http.Server {
+/** Constant-time comparison of the Authorization header against the token. */
+function isAuthorized(req: http.IncomingMessage, token: string): boolean {
+  const header = Buffer.from(req.headers.authorization ?? "");
+  const expected = Buffer.from(`Bearer ${token}`);
+  if (header.length !== expected.length) return false;
+  return crypto.timingSafeEqual(header, expected);
+}
+
+export function createApiServer(
+  config: Config,
+  store: ManifestStore,
+  token: string
+): http.Server {
   return http.createServer(async (req, res) => {
     try {
-      await handleApiRequest(req, res, config, store);
+      await handleApiRequest(req, res, config, store, token);
     } catch (err) {
       // Never let a handler error crash the daemon.
       if (!res.headersSent) json(res, 500, { error: String(err) });
@@ -62,7 +75,8 @@ async function handleApiRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   config: Config,
-  store: ManifestStore
+  store: ManifestStore,
+  token: string
 ): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
 
@@ -73,6 +87,15 @@ async function handleApiRequest(
     // the attacker's hostname, not a loopback name.
     if (!isAllowedApiHost(req.headers.host ?? "")) {
       json(res, 403, { error: "Forbidden host" });
+      return;
+    }
+
+    // Validate bearer token (generated at ~/.uptool/token by init/serve)
+    if (!isAuthorized(req, token)) {
+      json(res, 401, {
+        error:
+          "Unauthorized — missing or invalid API token. The token lives in ~/.uptool/token; upgrade the uptool CLI or check file permissions.",
+      });
       return;
     }
 
@@ -106,6 +129,9 @@ async function handleApiRequest(
           slug?: string;
           /** Stable human-readable name (e.g. "dashboard"). */
           name?: string;
+          /** Access key — public server requires Basic Auth when set.
+           *  On update: undefined keeps the existing key, "" removes it. */
+          key?: string;
         };
 
         // Validate name if provided
@@ -134,14 +160,21 @@ async function handleApiRequest(
 
         if (parsed.slug) {
           // Update existing deployment (slug field accepts slug OR name)
-          const resolvedSlug = store.update(parsed.slug, html, files, entry, filename);
+          const resolvedSlug = store.update(
+            parsed.slug, html, files, entry, filename, parsed.key
+          );
           json(res, 200, { slug: resolvedSlug });
         } else {
-          const slug = store.store(html, files, entry, filename, parsed.name);
+          const slug = store.store(html, files, entry, filename, parsed.name, parsed.key);
           json(res, 200, { slug });
         }
       } catch (err) {
-        json(res, 400, { error: String(err) });
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === "FILE_TOO_LARGE" || code === "QUOTA_EXCEEDED") {
+          json(res, 413, { error: (err as Error).message });
+        } else {
+          json(res, 400, { error: String(err) });
+        }
       }
       return;
     }
@@ -178,6 +211,35 @@ async function handleApiRequest(
           json(res, 404, { error: `No versions to roll back for: ${slug}` });
         } else {
           json(res, 200, { restored });
+        }
+      } catch (err) {
+        json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // ------------------------------------------------------------------
+    // POST /files/:slug/touch — renew expiry without redeploying
+    // ------------------------------------------------------------------
+    if (
+      req.method === "POST" &&
+      /^\/files\/[^/]+\/touch$/.test(url.pathname)
+    ) {
+      const slug = url.pathname.split("/")[2];
+      let bodyStr: string;
+      try {
+        bodyStr = await readBody(req, config.max_body_bytes);
+      } catch (err) {
+        json(res, 400, { error: String(err) });
+        return;
+      }
+      try {
+        const parsed = bodyStr ? (JSON.parse(bodyStr) as { ttl?: string }) : {};
+        const result = store.touch(slug, parsed.ttl);
+        if (!result) {
+          json(res, 404, { error: `Slug not found: ${slug}` });
+        } else {
+          json(res, 200, result);
         }
       } catch (err) {
         json(res, 400, { error: String(err) });

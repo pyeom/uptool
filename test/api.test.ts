@@ -14,11 +14,14 @@ const TEST_CONFIG = {
   max_body_bytes: 1024, // small limit for testing
 };
 
+const TEST_TOKEN = "test-token-abc123";
+
 function apiRequest(
   server: http.Server,
   method: string,
   urlPath: string,
-  body?: unknown
+  body?: unknown,
+  token: string | null = TEST_TOKEN
 ): Promise<{ status: number; data: unknown }> {
   return new Promise((resolve, reject) => {
     const addr = server.address() as { port: number };
@@ -29,9 +32,12 @@ function apiRequest(
         port: addr.port,
         path: urlPath,
         method,
-        headers: payload
-          ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
-          : {},
+        headers: {
+          ...(token !== null ? { Authorization: `Bearer ${token}` } : {}),
+          ...(payload
+            ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
+            : {}),
+        },
       },
       (res) => {
         let raw = "";
@@ -61,7 +67,7 @@ describe("API server", () => {
       new Promise<void>((resolve) => {
         tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "uptool-api-"));
         store = new ManifestStore(tmpDir, { ttl: "72h", max_versions: 5 });
-        server = createApiServer(TEST_CONFIG, store);
+        server = createApiServer(TEST_CONFIG, store, TEST_TOKEN);
         server.listen(0, "127.0.0.1", resolve);
       })
   );
@@ -76,6 +82,31 @@ describe("API server", () => {
         });
       })
   );
+
+  // -------------------------------------------------------------------------
+  // Auth
+  // -------------------------------------------------------------------------
+
+  it("rejects requests without a token", async () => {
+    const { status } = await apiRequest(server, "GET", "/files", undefined, null);
+    expect(status).toBe(401);
+  });
+
+  it("rejects requests with a wrong token", async () => {
+    const { status } = await apiRequest(server, "GET", "/files", undefined, "wrong-token");
+    expect(status).toBe(401);
+  });
+
+  it("rejects deploy without a token", async () => {
+    const { status } = await apiRequest(
+      server,
+      "POST",
+      "/deploy",
+      { html: "<h1>x</h1>" },
+      null
+    );
+    expect(status).toBe(401);
+  });
 
   // -------------------------------------------------------------------------
   // POST /deploy
@@ -154,6 +185,29 @@ describe("API server", () => {
     expect(status).toBe(413);
   });
 
+  it("returns 413 when a file exceeds max_file_size", async () => {
+    const tmpDir2 = fs.mkdtempSync(path.join(os.tmpdir(), "uptool-api-lim-"));
+    const limitedStore = new ManifestStore(tmpDir2, {
+      ttl: "72h",
+      max_versions: 5,
+      max_file_size: 100,
+    });
+    const limitedServer = createApiServer(TEST_CONFIG, limitedStore, TEST_TOKEN);
+    await new Promise<void>((resolve) => limitedServer.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const { status, data } = await apiRequest(limitedServer, "POST", "/deploy", {
+        html: "x".repeat(500),
+      });
+      expect(status).toBe(413);
+      expect((data as { error: string }).error).toContain("max_file_size");
+    } finally {
+      limitedStore.flushNow();
+      await new Promise<void>((resolve) => limitedServer.close(() => resolve()));
+      fs.rmSync(tmpDir2, { recursive: true });
+    }
+  });
+
   // -------------------------------------------------------------------------
   // GET /files
   // -------------------------------------------------------------------------
@@ -208,6 +262,68 @@ describe("API server", () => {
     const slug = store.store("<h1>only</h1>", null, "index.html", "t.html");
     const { status } = await apiRequest(server, "POST", `/files/${slug}/rollback`);
     expect(status).toBe(404);
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /files/:slug/touch
+  // -------------------------------------------------------------------------
+
+  it("touch renews expiry", async () => {
+    const slug = store.store("<p>t</p>", null, "index.html", "t.html");
+    const before = store.getEntry(slug)!.expires;
+    const { status, data } = await apiRequest(server, "POST", `/files/${slug}/touch`, {
+      ttl: "7d",
+    });
+    expect(status).toBe(200);
+    expect((data as { expires: number }).expires).toBeGreaterThan(before);
+  });
+
+  it("touch with ttl 0 sets never-expire", async () => {
+    const slug = store.store("<p>t</p>", null, "index.html", "t.html");
+    const { status, data } = await apiRequest(server, "POST", `/files/${slug}/touch`, {
+      ttl: "0",
+    });
+    expect(status).toBe(200);
+    expect((data as { expires: number }).expires).toBe(0);
+  });
+
+  it("touch returns 404 for unknown slug", async () => {
+    const { status } = await apiRequest(server, "POST", "/files/nothere1/touch", {
+      ttl: "7d",
+    });
+    expect(status).toBe(404);
+  });
+
+  it("touch returns 400 on invalid ttl", async () => {
+    const slug = store.store("<p>t</p>", null, "index.html", "t.html");
+    const { status } = await apiRequest(server, "POST", `/files/${slug}/touch`, {
+      ttl: "banana",
+    });
+    expect(status).toBe(400);
+  });
+
+  // -------------------------------------------------------------------------
+  // Protected deploys (key)
+  // -------------------------------------------------------------------------
+
+  it("stores the access key from the deploy body", async () => {
+    const { status, data } = await apiRequest(server, "POST", "/deploy", {
+      html: "<h1>secret</h1>",
+      key: "sekret",
+    });
+    expect(status).toBe(200);
+    const slug = (data as { slug: string }).slug;
+    expect(store.getEntry(slug)!.key).toBe("sekret");
+  });
+
+  it("update without key keeps existing protection", async () => {
+    const { data } = await apiRequest(server, "POST", "/deploy", {
+      html: "<h1>v1</h1>",
+      key: "sekret",
+    });
+    const slug = (data as { slug: string }).slug;
+    await apiRequest(server, "POST", "/deploy", { html: "<h1>v2</h1>", slug });
+    expect(store.getEntry(slug)!.key).toBe("sekret");
   });
 
   // -------------------------------------------------------------------------

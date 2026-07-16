@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { loadConfig, publicUrl, parseTtlMs } from "../config/index.js";
@@ -89,7 +90,7 @@ async function buildBody(
 
 export async function deployCommand(
   filePaths: string[],
-  opts: { update?: string; name?: string }
+  opts: { update?: string; name?: string; protect?: string | boolean }
 ): Promise<void> {
   const config = loadConfig();
 
@@ -98,6 +99,12 @@ export async function deployCommand(
     console.error("--update and --name are not supported when deploying multiple files.");
     process.exit(1);
   }
+
+  // --protect: true = autogenerate a key, string = user-supplied key
+  const key =
+    opts.protect === true
+      ? crypto.randomBytes(12).toString("base64url")
+      : opts.protect || undefined;
 
   const targets = filePaths.length === 0 ? [undefined] : filePaths;
   const ttlMs = parseTtlMs(config.ttl);
@@ -110,6 +117,7 @@ export async function deployCommand(
 
     if (!opts.update && opts.name) body.name = opts.name;
     if (opts.update) body.slug = opts.update;
+    if (key) body.key = key;
 
     try {
       const result = await callApi<{ slug?: string; error?: string }>(
@@ -122,6 +130,7 @@ export async function deployCommand(
       const slug = result.slug ?? (opts.update as string);
       const url = publicUrl(config, slug);
       console.log(`✓ ${url}${expiry}`);
+      if (key) console.log(`  key: ${key}  (Basic Auth password — any username)`);
     } catch (err) {
       console.error(`Error deploying ${filePath ?? "stdin"}: ${(err as Error).message}`);
       anyError = true;

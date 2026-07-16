@@ -147,6 +147,29 @@ uptool deploy v2.html --update x7k2mq
 # same URL, new content
 ```
 
+### QR code
+
+Print a scannable QR code for the URL, handy for pulling a deploy up on a phone:
+
+```bash
+uptool deploy dashboard.html --qr
+```
+
+With multiple files in one invocation, a QR is printed after each URL.
+
+### Watch and redeploy
+
+Keep the process running and redeploy in place whenever the source changes:
+
+```bash
+uptool deploy dashboard.html --watch
+# ✓ http://x7k2mq.mydev.com
+# Watching dashboard.html for changes... (Ctrl-C to stop)
+# ↻ redeployed http://x7k2mq.mydev.com (14:32:07)
+```
+
+Works on a single file or a directory bundle, and combines with `--qr` (printed once, on the first deploy). Changes are debounced 300ms. `--watch` requires exactly one file/directory argument and can't be used with stdin. Stop with Ctrl-C.
+
 ### Protected deployments
 
 Require a key to view (dashboards with semi-private data, drafts):

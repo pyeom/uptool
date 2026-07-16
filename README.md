@@ -1,5 +1,7 @@
 # uptool
 
+[![CI](https://github.com/pyeom/uptool/actions/workflows/ci.yml/badge.svg)](https://github.com/pyeom/uptool/actions/workflows/ci.yml)
+
 Serve LLM-generated HTML files from your own machine via wildcard subdomains.
 
 Your LLM runs `uptool deploy` → gets back a URL → you open it anywhere.

@@ -22,7 +22,7 @@ function apiRequest(
   urlPath: string,
   body?: unknown,
   token: string | null = TEST_TOKEN
-): Promise<{ status: number; data: unknown }> {
+): Promise<{ status: number; data: unknown; contentType?: string }> {
   return new Promise((resolve, reject) => {
     const addr = server.address() as { port: number };
     const payload = body ? JSON.stringify(body) : undefined;
@@ -41,12 +41,13 @@ function apiRequest(
       },
       (res) => {
         let raw = "";
+        const contentType = res.headers["content-type"];
         res.on("data", (c) => (raw += c));
         res.on("end", () => {
           try {
-            resolve({ status: res.statusCode ?? 0, data: JSON.parse(raw) });
+            resolve({ status: res.statusCode ?? 0, data: JSON.parse(raw), contentType });
           } catch {
-            resolve({ status: res.statusCode ?? 0, data: raw });
+            resolve({ status: res.statusCode ?? 0, data: raw, contentType });
           }
         });
       }
@@ -333,5 +334,32 @@ describe("API server", () => {
   it("returns 404 for unknown route", async () => {
     const { status } = await apiRequest(server, "GET", "/unknown");
     expect(status).toBe(404);
+  });
+
+  // -------------------------------------------------------------------------
+  // Admin page
+  // -------------------------------------------------------------------------
+
+  it("rejects /admin without a token", async () => {
+    const { status } = await apiRequest(server, "GET", "/admin", undefined, null);
+    expect(status).toBe(401);
+  });
+
+  it("rejects /admin with a bad token", async () => {
+    const { status } = await apiRequest(server, "GET", "/admin?token=nope", undefined, null);
+    expect(status).toBe(401);
+  });
+
+  it("serves the admin page with the correct token in the query string", async () => {
+    const { status, data, contentType } = await apiRequest(
+      server,
+      "GET",
+      `/admin?token=${TEST_TOKEN}`,
+      undefined,
+      null
+    );
+    expect(status).toBe(200);
+    expect(contentType).toContain("text/html");
+    expect(String(data)).toContain("uptool");
   });
 });

@@ -182,6 +182,19 @@ uptool list
 uptool rm x7k2mq
 ```
 
+### Admin page
+
+```bash
+uptool admin
+```
+
+Opens a 100% local, token-authenticated web UI (served by the internal API on
+`127.0.0.1:<api_port>`, no CORS, no external assets or CDNs) listing every
+deployment — slug, name, filename, created/expires as relative times, a lock
+icon for protected deploys, a preview link to the public URL, and a Delete
+button per row. Auto-refreshes every 10s. The token is passed once in the URL
+and immediately scrubbed from the browser's address bar.
+
 ### Daemon control
 
 ```bash

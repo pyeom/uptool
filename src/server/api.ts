@@ -162,6 +162,12 @@ async function handleApiRequest(
           key?: string;
         };
 
+        // key must be a string when present (undefined keeps, "" removes)
+        if (parsed.key !== undefined && typeof parsed.key !== "string") {
+          json(res, 400, { error: "'key' must be a string" });
+          return;
+        }
+
         // Validate name if provided
         if (parsed.name && !isValidName(parsed.name)) {
           json(res, 400, {
@@ -258,7 +264,11 @@ async function handleApiRequest(
       try {
         bodyStr = await readBody(req, config.max_body_bytes);
       } catch (err) {
-        json(res, 400, { error: String(err) });
+        if ((err as NodeJS.ErrnoException).code === "TOO_LARGE") {
+          json(res, 413, { error: "Request entity too large" });
+        } else {
+          json(res, 400, { error: String(err) });
+        }
         return;
       }
       try {

@@ -20,7 +20,7 @@ export async function touchCommand(
     const result = await callApi<{ slug?: string; expires?: number; error?: string }>(
       config.api_port,
       "POST",
-      `/files/${slug}/touch`,
+      `/files/${encodeURIComponent(slug)}/touch`,
       { ttl }
     );
     if (result.error) throw new Error(result.error);

@@ -19,7 +19,11 @@ function getToken(): string {
   if (!fs.existsSync(p)) {
     throw new ApiError("Auth token not found. Run: uptool init");
   }
-  return fs.readFileSync(p, "utf8").trim();
+  const token = fs.readFileSync(p, "utf8").trim();
+  if (!token) {
+    throw new ApiError("Auth token not found. Run: uptool init");
+  }
+  return token;
 }
 
 export function callApi<T = unknown>(

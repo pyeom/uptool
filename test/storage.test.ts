@@ -469,6 +469,56 @@ describe("ManifestStore", () => {
       fs.rmSync(dir, { recursive: true });
     });
 
+    it("allows an equal-sized replacement at the quota when versioning is off", () => {
+      const dir = tmpDir + "-lim7";
+      const limited = new ManifestStore(dir, {
+        ttl: "72h",
+        max_versions: 0, // replaced content frees its bytes
+        max_total_storage: 300,
+      });
+      const slug = limited.store("a".repeat(250), null, "index.html", "a.html");
+      expect(() =>
+        limited.update(slug, "b".repeat(250), null, "index.html", "a.html")
+      ).not.toThrow();
+      // Growing past the quota still fails
+      expect(() =>
+        limited.update(slug, "c".repeat(400), null, "index.html", "a.html")
+      ).toThrow(/max_total_storage/);
+      fs.rmSync(dir, { recursive: true });
+    });
+
+    it("counts existing content against the quota when versioning keeps it", () => {
+      const dir = tmpDir + "-lim8";
+      const limited = new ManifestStore(dir, {
+        ttl: "72h",
+        max_versions: 2, // old content archived into .versions — not freed
+        max_total_storage: 300,
+      });
+      const slug = limited.store("a".repeat(250), null, "index.html", "a.html");
+      expect(() =>
+        limited.update(slug, "b".repeat(250), null, "index.html", "a.html")
+      ).toThrow(/max_total_storage/);
+      fs.rmSync(dir, { recursive: true });
+    });
+
+    it("measures exact decoded base64 sizes (padding-aware)", () => {
+      const dir = tmpDir + "-lim9";
+      const limited = new ManifestStore(dir, {
+        ttl: "72h",
+        max_versions: 0,
+        max_file_size: 1,
+      });
+      // "YQ==" decodes to exactly 1 byte ("a") — must pass a 1-byte limit
+      expect(() =>
+        limited.store(null, { "index.html": "YQ==" }, "index.html", "a.html")
+      ).not.toThrow();
+      // 2 bytes must fail
+      expect(() =>
+        limited.store(null, { "index.html": Buffer.from("ab").toString("base64") }, "index.html", "b.html")
+      ).toThrow(/max_file_size/);
+      fs.rmSync(dir, { recursive: true });
+    });
+
     it("applies limits on update too", () => {
       const dir = tmpDir + "-lim6";
       const limited = new ManifestStore(dir, {

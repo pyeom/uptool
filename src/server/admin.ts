@@ -104,7 +104,7 @@ export function renderAdminPage(config: Config): string {
       var url = publicUrl(f.slug);
       var hits = (f.hits !== undefined) ? '<span class="muted"> · ' + f.hits + ' hits</span>' : "";
       return '<tr data-slug="' + escapeHtml(f.slug) + '">' +
-        '<td>' + escapeHtml(f.slug) + (f.key ? '<span class="lock" title="protected">&#128274;</span>' : '') + '</td>' +
+        '<td>' + escapeHtml(f.slug) + (f.protected ? '<span class="lock" title="protected">&#128274;</span>' : '') + '</td>' +
         '<td>' + escapeHtml(f.name || "") + '</td>' +
         '<td>' + escapeHtml(f.filename) + hits + '</td>' +
         '<td>' + relTime(f.created) + '</td>' +

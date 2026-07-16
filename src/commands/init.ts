@@ -1,7 +1,15 @@
+import * as fs from "node:fs";
 import * as readline from "node:readline";
 import * as path from "node:path";
 import * as os from "node:os";
-import { Config, DEFAULT_CONFIG, saveConfig, configPath, loadOrGenerateToken } from "../config/index.js";
+import {
+  Config,
+  DEFAULT_CONFIG,
+  saveConfig,
+  configPath,
+  loadOrGenerateToken,
+  tokenPath,
+} from "../config/index.js";
 
 function prompt(rl: readline.Interface, question: string, fallback: string): Promise<string> {
   return new Promise((resolve) => {
@@ -37,9 +45,14 @@ export async function initCommand(): Promise<void> {
   };
 
   saveConfig(config);
-  const token = loadOrGenerateToken();
+  const tokenExisted = fs.existsSync(tokenPath());
+  loadOrGenerateToken();
   console.log(`\n✓ Config saved to ${configPath()}`);
-  console.log(`✓ Auth token generated (stored in ~/.uptool/token)`);
+  console.log(
+    tokenExisted
+      ? `✓ Auth token ready (existing ~/.uptool/token kept)`
+      : `✓ Auth token generated (stored in ~/.uptool/token)`
+  );
   console.log(`\nDNS setup required:`);
   console.log(`  Add a wildcard A record: *.${base_url} → <your machine's public IP>`);
   console.log(`  If behind a router, forward port ${config.port} to this machine.`);

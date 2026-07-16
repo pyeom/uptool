@@ -12,9 +12,14 @@ export function installServiceCommand(): void {
     process.exit(1);
   }
 
-  const node = process.execPath;
+  // Quote + escape for a systemd ExecStart value: backslashes, double quotes,
+  // and % specifiers (%% is a literal percent in unit files).
+  const q = (s: string): string =>
+    `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%")}"`;
+
+  const node = q(process.execPath);
   // Resolve symlinks (npm global bin is usually a symlink into node_modules)
-  const cli = fs.realpathSync(process.argv[1]);
+  const cli = q(fs.realpathSync(process.argv[1]));
 
   const unit = `[Unit]
 Description=uptool — selfhosted HTML serving daemon

@@ -282,8 +282,13 @@ export class ManifestStore extends EventEmitter {
     return this.manifest[slug] ?? null;
   }
 
-  list(): Array<ManifestEntry & { slug: string }> {
-    return Object.entries(this.manifest).map(([slug, entry]) => ({ slug, ...entry }));
+  list(): Array<Omit<ManifestEntry, "key"> & { slug: string; protected: boolean }> {
+    // Never serialize the access key — list() feeds GET /files (CLI, MCP,
+    // admin page). Expose only a `protected` flag.
+    return Object.entries(this.manifest).map(([slug, entry]) => {
+      const { key, ...rest } = entry;
+      return { slug, ...rest, protected: Boolean(key) };
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -356,10 +361,13 @@ export class ManifestStore extends EventEmitter {
     const slug = this.resolveSlug(slugOrName);
     if (!slug) throw new Error(`Slug not found: ${slugOrName}`);
 
-    this._checkLimits(html, files);
-
     const existing = this.manifest[slug];
     const slugDir = path.join(this.storageDir, slug);
+
+    // With versioning off the current content is replaced outright, so its
+    // bytes free up; with versioning on it moves into .versions and stays.
+    const reclaimed = this.maxVersions > 0 ? 0 : this._slugContentSize(slugDir);
+    this._checkLimits(html, files, reclaimed);
 
     // Save current state as a version before overwriting
     if (this.maxVersions > 0) {
@@ -563,7 +571,8 @@ export class ManifestStore extends EventEmitter {
    */
   private _checkLimits(
     html: string | null,
-    files: Record<string, string> | null
+    files: Record<string, string> | null,
+    reclaimedBytes = 0
   ): void {
     if (this.maxFileSize <= 0 && this.maxTotalStorage <= 0) return;
 
@@ -587,8 +596,9 @@ export class ManifestStore extends EventEmitter {
       incoming = size;
     } else if (files) {
       for (const [relPath, base64Content] of Object.entries(files)) {
-        // Decoded size from base64 length — avoids decoding just to measure
-        const size = Math.floor((base64Content.length * 3) / 4);
+        // Decoded size from base64 length (minus padding) — exact without decoding
+        const padding = base64Content.endsWith("==") ? 2 : base64Content.endsWith("=") ? 1 : 0;
+        const size = Math.floor((base64Content.length * 3) / 4) - padding;
         if (this.maxFileSize > 0 && size > this.maxFileSize) {
           const err = new Error(
             `File too large: "${relPath}" is ${fmt(size)}, exceeds max_file_size (${fmt(this.maxFileSize)})`
@@ -601,7 +611,7 @@ export class ManifestStore extends EventEmitter {
     }
 
     if (this.maxTotalStorage > 0) {
-      const used = dirSize(this.storageDir);
+      const used = Math.max(0, dirSize(this.storageDir) - reclaimedBytes);
       if (used + incoming > this.maxTotalStorage) {
         const err = new Error(
           `Storage quota exceeded: ${fmt(used)} used + ${fmt(incoming)} incoming exceeds max_total_storage (${fmt(this.maxTotalStorage)}). Remove old deployments with: uptool rm <slug>`
@@ -610,6 +620,18 @@ export class ManifestStore extends EventEmitter {
         throw err;
       }
     }
+  }
+
+  /** Size of a slug's current content, excluding the .versions archive. */
+  private _slugContentSize(slugDir: string): number {
+    if (!fs.existsSync(slugDir)) return 0;
+    let total = 0;
+    for (const item of fs.readdirSync(slugDir, { withFileTypes: true })) {
+      if (item.name === ".versions") continue;
+      const full = path.join(slugDir, item.name);
+      total += item.isDirectory() ? dirSize(full) : fs.statSync(full).size;
+    }
+    return total;
   }
 
   private _writeBundleFiles(

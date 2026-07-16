@@ -1,5 +1,7 @@
 # uptool
 
+[![CI](https://github.com/pyeom/uptool/actions/workflows/ci.yml/badge.svg)](https://github.com/pyeom/uptool/actions/workflows/ci.yml)
+
 Serve LLM-generated HTML files from your own machine via wildcard subdomains.
 
 Your LLM runs `uptool deploy` → gets back a URL → you open it anywhere.
@@ -145,6 +147,29 @@ uptool deploy v2.html --update x7k2mq
 # same URL, new content
 ```
 
+### QR code
+
+Print a scannable QR code for the URL, handy for pulling a deploy up on a phone:
+
+```bash
+uptool deploy dashboard.html --qr
+```
+
+With multiple files in one invocation, a QR is printed after each URL.
+
+### Watch and redeploy
+
+Keep the process running and redeploy in place whenever the source changes:
+
+```bash
+uptool deploy dashboard.html --watch
+# ✓ http://x7k2mq.mydev.com
+# Watching dashboard.html for changes... (Ctrl-C to stop)
+# ↻ redeployed http://x7k2mq.mydev.com (14:32:07)
+```
+
+Works on a single file or a directory bundle, and combines with `--qr` (printed once, on the first deploy). Changes are debounced 300ms. `--watch` requires exactly one file/directory argument and can't be used with stdin. Stop with Ctrl-C.
+
 ### Protected deployments
 
 Require a key to view (dashboards with semi-private data, drafts):
@@ -181,6 +206,19 @@ uptool list
 ```bash
 uptool rm x7k2mq
 ```
+
+### Admin page
+
+```bash
+uptool admin
+```
+
+Opens a 100% local, token-authenticated web UI (served by the internal API on
+`127.0.0.1:<api_port>`, no CORS, no external assets or CDNs) listing every
+deployment — slug, name, filename, created/expires as relative times, a lock
+icon for protected deploys, a preview link to the public URL, and a Delete
+button per row. Auto-refreshes every 10s. The token is passed once in the URL
+and immediately scrubbed from the browser's address bar.
 
 ### Daemon control
 

@@ -138,6 +138,7 @@ function handleRequest(
   // every asset request within the bundle (CSS/JS/images).
   const resolved = store.resolveSlug(slugOrName);
   const manifestEntry = resolved ? store.getEntry(resolved) : null;
+  const isProtected = Boolean(manifestEntry?.key);
   if (manifestEntry?.key && !basicAuthOk(req, manifestEntry.key)) {
     sendErrorPage(res, 401, config, "Authorization required", {
       "WWW-Authenticate": 'Basic realm="uptool"',
@@ -160,9 +161,13 @@ function handleRequest(
 
   const headers: http.OutgoingHttpHeaders = {
     "Content-Type": result.contentType,
-    // Cache HTML with no-cache (LLM iterate loop — always fresh);
-    // long cache for static assets
-    "Cache-Control": isHtml ? "no-cache" : "public, max-age=3600",
+    // Protected content must never land in a shared cache. Otherwise:
+    // no-cache HTML (LLM iterate loop — always fresh), long cache for assets.
+    "Cache-Control": isProtected
+      ? "private, no-store"
+      : isHtml
+        ? "no-cache"
+        : "public, max-age=3600",
   };
   applySecurityHeaders(headers, config);
 

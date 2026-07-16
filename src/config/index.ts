@@ -83,7 +83,15 @@ export function loadOrGenerateToken(): string {
   const p = tokenPath();
   if (fs.existsSync(p)) {
     const existing = fs.readFileSync(p, "utf8").trim();
-    if (existing) return existing;
+    if (existing) {
+      // Re-enforce 0600 — the file may have been created or loosened externally
+      try {
+        fs.chmodSync(p, 0o600);
+      } catch {
+        // best-effort; reading it already proved we own access
+      }
+      return existing;
+    }
   }
   // Generate new token: 32 random bytes hex-encoded (64 chars)
   const token = crypto.randomBytes(32).toString("hex");

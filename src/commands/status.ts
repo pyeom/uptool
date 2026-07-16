@@ -64,9 +64,15 @@ export async function statusCommand(opts: { json?: boolean } = {}): Promise<void
   if (!running) {
     if (pid !== null) {
       console.log(`uptool: stopped (stale PID file, pid ${pid})`);
-      fs.unlinkSync(pidPath());
     } else {
       console.log("uptool: stopped");
+    }
+    // Clean up the PID file even when its contents were unparseable; tolerate
+    // it vanishing between the existence check and the unlink.
+    try {
+      if (fs.existsSync(pidPath())) fs.unlinkSync(pidPath());
+    } catch {
+      // already gone — nothing to clean
     }
   } else {
     console.log(`uptool: running (pid ${pid})`);
@@ -74,9 +80,27 @@ export async function statusCommand(opts: { json?: boolean } = {}): Promise<void
 
   const log = logPath();
   if (fs.existsSync(log)) {
-    const lines = fs.readFileSync(log, "utf8").trim().split("\n");
-    const tail = lines.slice(-10).join("\n");
+    const tail = readLogTail(log, 10);
     console.log(`\n--- last 10 log lines (${log}) ---`);
     console.log(tail);
+  }
+}
+
+/**
+ * Read the last `lineCount` lines of a file without loading it whole.
+ * Reads a bounded chunk from the end — plenty for 10 log lines.
+ */
+function readLogTail(logFile: string, lineCount: number): string {
+  const CHUNK = 16 * 1024;
+  const fd = fs.openSync(logFile, "r");
+  try {
+    const size = fs.fstatSync(fd).size;
+    const readLen = Math.min(size, CHUNK);
+    const buf = Buffer.alloc(readLen);
+    fs.readSync(fd, buf, 0, readLen, size - readLen);
+    const lines = buf.toString("utf8").trim().split("\n");
+    return lines.slice(-lineCount).join("\n");
+  } finally {
+    fs.closeSync(fd);
   }
 }

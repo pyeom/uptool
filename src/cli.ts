@@ -9,6 +9,7 @@ import { statusCommand } from "./commands/status.js";
 import { installServiceCommand } from "./commands/install-service.js";
 import { touchCommand } from "./commands/touch.js";
 import { openCommand } from "./commands/open.js";
+import { adminCommand } from "./commands/admin.js";
 import { rollbackCommand } from "./commands/rollback.js";
 import { mcpCommand } from "./commands/mcp.js";
 import {
@@ -47,6 +48,12 @@ program
   .option(
     "--protect [key]",
     "Require Basic Auth to view (autogenerates a key when none is given)"
+  )
+  .option("--qr", "Print a QR code for the public URL", false)
+  .option(
+    "--watch",
+    "Watch the file/directory and redeploy on change (single target only)",
+    false
   )
   .action((files, opts) => deployCommand(files, opts));
 
@@ -116,6 +123,11 @@ program
   .command("config")
   .description("Reconfigure all settings interactively")
   .action(() => configCommand());
+
+program
+  .command("admin")
+  .description("Open the local admin web UI (100% local, token-authenticated)")
+  .action(() => adminCommand());
 
 program
   .command("mcp")

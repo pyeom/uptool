@@ -1,9 +1,11 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { loadConfig, publicUrl, parseTtlMs } from "../config/index.js";
+import qrcode from "qrcode-terminal";
+import { loadConfig, publicUrl, parseTtlMs, type Config } from "../config/index.js";
 import { callApi } from "../lib/api-client.js";
 import { validateBundlePath } from "../storage/index.js";
+import { debounce, formatTime } from "../lib/watch.js";
 
 function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -88,15 +90,76 @@ async function buildBody(
   return { html, filename: path.basename(filePath) };
 }
 
+/** Watch a file or directory and redeploy (in place, by slug) on change. */
+function watchAndRedeploy(
+  target: string,
+  slug: string,
+  key: string | undefined,
+  config: Config
+): void {
+  console.log(`\nWatching ${target} for changes... (Ctrl-C to stop)`);
+
+  const redeploy = debounce(async () => {
+    try {
+      const body = await buildBody(target);
+      body.slug = slug;
+      if (key) body.key = key;
+      const result = await callApi<{ slug?: string; error?: string }>(
+        config.api_port,
+        "POST",
+        "/deploy",
+        body
+      );
+      if (result.error) throw new Error(result.error);
+      const url = publicUrl(config, result.slug ?? slug);
+      console.log(`↻ redeployed ${url} (${formatTime()})`);
+    } catch (err) {
+      console.error(`Error redeploying: ${(err as Error).message}`);
+    }
+  }, 300);
+
+  const isDir = fs.statSync(target).isDirectory();
+
+  if (isDir) {
+    try {
+      fs.watch(target, { recursive: true }, () => redeploy());
+      return;
+    } catch {
+      // Recursive fs.watch unavailable on this platform/Node version — fall
+      // back to watching each file individually.
+      for (const { full } of walkDir(target, target)) {
+        try {
+          fs.watch(full, () => redeploy());
+        } catch {
+          // ignore files that can't be watched
+        }
+      }
+    }
+  } else {
+    fs.watch(target, () => redeploy());
+  }
+}
+
 export async function deployCommand(
   filePaths: string[],
-  opts: { update?: string; name?: string; protect?: string | boolean }
+  opts: {
+    update?: string;
+    name?: string;
+    protect?: string | boolean;
+    qr?: boolean;
+    watch?: boolean;
+  }
 ): Promise<void> {
   const config = loadConfig();
 
   const multi = filePaths.length > 1;
   if (multi && (opts.update || opts.name)) {
     console.error("--update and --name are not supported when deploying multiple files.");
+    process.exit(1);
+  }
+
+  if (opts.watch && filePaths.length !== 1) {
+    console.error("--watch requires exactly one file or directory argument (no stdin).");
     process.exit(1);
   }
 
@@ -111,6 +174,8 @@ export async function deployCommand(
   const expiry = ttlMs > 0 ? `  (expires in ${config.ttl})` : "";
 
   let anyError = false;
+  let watchTarget: string | undefined;
+  let watchSlug: string | undefined;
 
   for (const filePath of targets) {
     const body = await buildBody(filePath);
@@ -131,6 +196,11 @@ export async function deployCommand(
       const url = publicUrl(config, slug);
       console.log(`✓ ${url}${expiry}`);
       if (key) console.log(`  key: ${key}  (Basic Auth password — any username)`);
+      if (opts.qr) qrcode.generate(url, { small: true });
+      if (opts.watch && filePath) {
+        watchTarget = filePath;
+        watchSlug = slug;
+      }
     } catch (err) {
       console.error(`Error deploying ${filePath ?? "stdin"}: ${(err as Error).message}`);
       anyError = true;
@@ -138,4 +208,8 @@ export async function deployCommand(
   }
 
   if (anyError) process.exit(1);
+
+  if (opts.watch && watchTarget && watchSlug) {
+    watchAndRedeploy(watchTarget, watchSlug, key, config);
+  }
 }

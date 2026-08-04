@@ -205,7 +205,7 @@ describe("API server", () => {
     } finally {
       limitedStore.flushNow();
       await new Promise<void>((resolve) => limitedServer.close(() => resolve()));
-      fs.rmSync(tmpDir2, { recursive: true });
+      fs.rmSync(tmpDir2, { recursive: true, force: true });
     }
   });
 
@@ -336,30 +336,85 @@ describe("API server", () => {
     expect(status).toBe(404);
   });
 
-  // -------------------------------------------------------------------------
-  // Admin page
-  // -------------------------------------------------------------------------
-
-  it("rejects /admin without a token", async () => {
-    const { status } = await apiRequest(server, "GET", "/admin", undefined, null);
-    expect(status).toBe(401);
+  it("returns 404 for /admin (removed)", async () => {
+    const { status } = await apiRequest(server, "GET", "/admin");
+    expect(status).toBe(404);
   });
 
-  it("rejects /admin with a bad token", async () => {
-    const { status } = await apiRequest(server, "GET", "/admin?token=nope", undefined, null);
-    expect(status).toBe(401);
-  });
+  // -------------------------------------------------------------------------
+  // Body reassembly across chunk boundaries (UTF-8 safety)
+  // -------------------------------------------------------------------------
 
-  it("serves the admin page with the correct token in the query string", async () => {
-    const { status, data, contentType } = await apiRequest(
-      server,
-      "GET",
-      `/admin?token=${TEST_TOKEN}`,
-      undefined,
-      null
-    );
-    expect(status).toBe(200);
-    expect(contentType).toContain("text/html");
-    expect(String(data)).toContain("uptool");
+  it("reassembles a multi-byte UTF-8 char split across TCP chunks without corruption", async () => {
+    // Use a dedicated server with a large enough max_body_bytes.
+    const tmpDir2 = fs.mkdtempSync(path.join(os.tmpdir(), "uptool-api-utf8-"));
+    const bigStore = new ManifestStore(tmpDir2, { ttl: "72h", max_versions: 5 });
+    const bigConfig = { ...TEST_CONFIG, max_body_bytes: 1024 * 1024 };
+    const bigServer = createApiServer(bigConfig, bigStore, TEST_TOKEN);
+    await new Promise<void>((resolve) => bigServer.listen(0, "127.0.0.1", resolve));
+
+    try {
+      // Build HTML well over 64KB containing accented chars and an emoji.
+      const filler = "café ".repeat(15000); // > 64KB, includes accented chars
+      const html = filler + "🎉END";
+      const payloadStr = JSON.stringify({ html });
+      const payloadBuf = Buffer.from(payloadStr, "utf8");
+      expect(payloadBuf.length).toBeGreaterThan(65536);
+
+      // Find a multi-byte character and split the buffer inside its byte
+      // sequence, so no single "chunk" write contains a complete character.
+      const emojiBuf = Buffer.from("🎉", "utf8"); // 4 bytes
+      const emojiIdx = payloadBuf.indexOf(emojiBuf);
+      expect(emojiIdx).toBeGreaterThan(-1);
+      const splitAt = emojiIdx + 2; // split mid-character
+
+      const chunk1 = payloadBuf.subarray(0, splitAt);
+      const chunk2 = payloadBuf.subarray(splitAt);
+
+      const addr = bigServer.address() as { port: number };
+
+      const parsed = await new Promise<{ slug: string }>((resolve, reject) => {
+        const req = http.request(
+          {
+            hostname: "127.0.0.1",
+            port: addr.port,
+            path: "/deploy",
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${TEST_TOKEN}`,
+              "Content-Type": "application/json",
+              "Content-Length": payloadBuf.length,
+            },
+          },
+          (res) => {
+            let raw = "";
+            res.on("data", (c) => (raw += c));
+            res.on("end", () => {
+              // Reject rather than throw here: a failed expect inside this
+              // callback would leave the Promise pending until the timeout.
+              if (res.statusCode !== 200) {
+                reject(new Error(`status ${res.statusCode}: ${raw}`));
+                return;
+              }
+              resolve(JSON.parse(raw) as { slug: string });
+            });
+          }
+        );
+        req.on("error", reject);
+        req.on("socket", (socket) => socket.setNoDelay(true));
+        req.write(chunk1, () => {
+          // Force the two chunks onto separate TCP reads on the server side.
+          setTimeout(() => req.end(chunk2), 20);
+        });
+      });
+
+      const stored = bigStore.readFile(parsed.slug, "/");
+      expect(stored).not.toBeNull();
+      expect(stored!.buffer.toString("utf8")).toBe(html);
+    } finally {
+      bigStore.flushNow();
+      await new Promise<void>((resolve) => bigServer.close(() => resolve()));
+      fs.rmSync(tmpDir2, { recursive: true, force: true });
+    }
   });
 });

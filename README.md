@@ -198,27 +198,30 @@ uptool touch x7k2mq9a            # renew with the configured default ttl
 
 ```bash
 uptool list
-# x7k2mq  http://x7k2mq.mydev.com  [dashboard.html]  expires in 71h 45m
+# x7k2mq  http://x7k2mq.mydev.com  [dashboard.html]  expires in 71h 45m  3 hits · last seen 12m ago
+# a9f3kd2p  http://a9f3kd2p.mydev.com  [draft.html]  expires in 20h 3m  never viewed
 ```
+
+View counts track HTML page loads only — assets inside a bundle, 404s and
+`HEAD` requests don't inflate the number. They survive daemon restarts and
+`--update` redeploys.
+
+For scripts (or for the LLM driving uptool), `--json` emits the full record:
+
+```bash
+uptool list --json
+# [{"slug":"x7k2mq","url":"http://x7k2mq.mydev.com","filename":"dashboard.html",
+#   "created":1754006400000,"expires":1754265600000,"hits":3,
+#   "last_seen":1754092800000,"protected":false}]
+```
+
+Access keys of protected deployments are never included in either output.
 
 ### Remove a deployment
 
 ```bash
 uptool rm x7k2mq
 ```
-
-### Admin page
-
-```bash
-uptool admin
-```
-
-Opens a 100% local, token-authenticated web UI (served by the internal API on
-`127.0.0.1:<api_port>`, no CORS, no external assets or CDNs) listing every
-deployment — slug, name, filename, created/expires as relative times, a lock
-icon for protected deploys, a preview link to the public URL, and a Delete
-button per row. Auto-refreshes every 10s. The token is passed once in the URL
-and immediately scrubbed from the browser's address bar.
 
 ### Daemon control
 
@@ -227,6 +230,17 @@ uptool stop           # stop the daemon
 uptool status         # check if running + last 10 log lines
 uptool status --json  # machine-readable health for monitoring (exit 1 if unhealthy)
 ```
+
+### Logs
+
+```bash
+uptool logs           # last 50 lines of ~/.uptool/server.log
+uptool logs -n 200    # last 200 lines
+uptool logs -f        # follow as it grows (Ctrl-C to stop)
+```
+
+Reads the log file directly — no daemon or config needed, so it still works
+when the daemon is down, which is usually when you want it.
 
 ### Run as a systemd service (Linux)
 

@@ -1,17 +1,15 @@
 import * as http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import { Config } from "../config/index.js";
+import { ManifestStore } from "../storage/index.js";
+import { extractSlug } from "../lib/slug.js";
+import { basicAuthOk } from "../lib/basic-auth.js";
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+interface TrackedSocket extends WebSocket {
+  isAlive?: boolean;
 }
 
-function extractSlug(host: string, baseUrl: string): string | null {
-  const base = baseUrl.replace(/^https?:\/\//, "");
-  const slug = host.replace(new RegExp(`\\.${escapeRegex(base)}(:\\d+)?$`), "");
-  if (!slug || slug === host) return null;
-  return slug;
-}
+const HEARTBEAT_MS = 30_000;
 
 /**
  * Manages WebSocket connections for live-reload.
@@ -22,10 +20,11 @@ function extractSlug(host: string, baseUrl: string): string | null {
  * open tabs for that slug.
  */
 export class WsManager {
-  private clients = new Map<string, Set<WebSocket>>();
+  private clients = new Map<string, Set<TrackedSocket>>();
   private wss: WebSocketServer;
+  private heartbeat: NodeJS.Timeout;
 
-  constructor(server: http.Server, config: Config) {
+  constructor(server: http.Server, config: Config, store: ManifestStore) {
     this.wss = new WebSocketServer({ noServer: true });
 
     server.on("upgrade", (req, socket, head) => {
@@ -42,14 +41,34 @@ export class WsManager {
         return;
       }
 
-      this.wss.handleUpgrade(req, socket, head, (ws) => {
-        if (!this.clients.has(slug)) this.clients.set(slug, new Set());
-        const clientSet = this.clients.get(slug)!;
+      // Protected deployments require the same Basic Auth as the public
+      // HTTP server, otherwise a third party who knows the URL could
+      // observe update events for a private deployment.
+      const resolved = store.resolveSlug(slug);
+      const manifestEntry = resolved ? store.getEntry(resolved) : null;
+      if (manifestEntry?.key && !basicAuthOk(req, manifestEntry.key)) {
+        socket.destroy();
+        return;
+      }
+
+      // Key by the canonical slug: broadcasts come from the store's "updated"
+      // event, which always emits the canonical slug — a client that connected
+      // via a name would never be reached under the host-derived key.
+      const key = resolved ?? slug;
+
+      this.wss.handleUpgrade(req, socket, head, (ws: TrackedSocket) => {
+        if (!this.clients.has(key)) this.clients.set(key, new Set());
+        const clientSet = this.clients.get(key)!;
         clientSet.add(ws);
+
+        ws.isAlive = true;
+        ws.on("pong", () => {
+          ws.isAlive = true;
+        });
 
         ws.on("close", () => {
           clientSet.delete(ws);
-          if (clientSet.size === 0) this.clients.delete(slug);
+          if (clientSet.size === 0) this.clients.delete(key);
         });
 
         ws.on("error", () => {
@@ -57,6 +76,25 @@ export class WsManager {
         });
       });
     });
+
+    // Dead connections (client vanished without a clean close) never get
+    // removed on their own — sweep periodically and terminate anything
+    // that hasn't ponged since the previous sweep.
+    this.heartbeat = setInterval(() => {
+      for (const [slug, clientSet] of this.clients) {
+        for (const ws of clientSet) {
+          if (ws.isAlive === false) {
+            clientSet.delete(ws);
+            ws.terminate();
+            continue;
+          }
+          ws.isAlive = false;
+          ws.ping();
+        }
+        if (clientSet.size === 0) this.clients.delete(slug);
+      }
+    }, HEARTBEAT_MS);
+    this.heartbeat.unref();
   }
 
   /** Broadcast a message to all open WebSocket clients for a slug. */
@@ -71,6 +109,7 @@ export class WsManager {
   }
 
   close(): void {
+    clearInterval(this.heartbeat);
     this.wss.close();
   }
 }

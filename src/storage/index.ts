@@ -21,6 +21,10 @@ export interface ManifestEntry {
   key?: string;
   /** Saved version timestamps (newest first). Used for rollback. */
   versions?: string[];
+  /** View count (HTML page views only). Absent = 0. */
+  hits?: number;
+  /** Epoch ms of the most recent view. Absent = never viewed. */
+  last_seen?: number;
 }
 
 export type Manifest = Record<string, ManifestEntry>;
@@ -168,7 +172,7 @@ export function ensureStorageDir(storageDir: string): string {
 // ---------------------------------------------------------------------------
 
 // Typed EventEmitter declaration for TypeScript
-declare interface ManifestStore {
+export declare interface ManifestStore {
   on(event: "updated", listener: (slug: string) => void): this;
   emit(event: "updated", slug: string): boolean;
 }
@@ -247,10 +251,21 @@ export class ManifestStore extends EventEmitter {
   // -------------------------------------------------------------------------
 
   private scheduleFlush(): void {
-    if (this.flushTimer) clearTimeout(this.flushTimer);
+    // Keep an already-pending timer rather than pushing it back: the flush
+    // writes the whole manifest, so a pending one already covers this change,
+    // and sustained traffic (recordHit per page view) would otherwise reset
+    // the deadline forever and never persist.
+    if (this.flushTimer) return;
     this.flushTimer = setTimeout(() => {
-      saveManifestSync(this.storageDir, this.manifest);
       this.flushTimer = null;
+      // This runs detached on a timer, so a throw here is an uncaught exception
+      // rather than something a caller can handle. Keep the in-memory manifest
+      // authoritative and log instead — the next mutation schedules a retry.
+      try {
+        saveManifestSync(this.storageDir, this.manifest);
+      } catch (err) {
+        console.error(`[uptool] manifest flush failed: ${(err as Error).message}`);
+      }
     }, 500);
   }
 
@@ -283,8 +298,8 @@ export class ManifestStore extends EventEmitter {
   }
 
   list(): Array<Omit<ManifestEntry, "key"> & { slug: string; protected: boolean }> {
-    // Never serialize the access key — list() feeds GET /files (CLI, MCP,
-    // admin page). Expose only a `protected` flag.
+    // Never serialize the access key — list() feeds GET /files (CLI).
+    // Expose only a `protected` flag.
     return Object.entries(this.manifest).map(([slug, entry]) => {
       const { key, ...rest } = entry;
       return { slug, ...rest, protected: Boolean(key) };
@@ -491,6 +506,22 @@ export class ManifestStore extends EventEmitter {
     return { buffer: fs.readFileSync(fullPath), contentType: mimeForPath(fullPath) };
   }
 
+  /**
+   * Record a page view for `slug`. Called on the hot request path (every
+   * HTML view), so it must stay cheap: in-memory increment only, no extra
+   * disk I/O — it rides the existing debounced flush. Unknown slug is a
+   * silent no-op.
+   */
+  recordHit(slugOrName: string): void {
+    const slug = this.resolveSlug(slugOrName);
+    if (!slug) return;
+    const entry = this.manifest[slug];
+    if (!entry) return;
+    entry.hits = (entry.hits ?? 0) + 1;
+    entry.last_seen = Date.now();
+    this.scheduleFlush();
+  }
+
   // -------------------------------------------------------------------------
   // Versioning (P3)
   // -------------------------------------------------------------------------
@@ -665,7 +696,10 @@ export class ManifestStore extends EventEmitter {
 
     const entry = this.manifest[slug];
     const versionsDir = path.join(slugDir, ".versions");
-    const ts = Date.now().toString();
+    // Two updates within the same millisecond must not share a version id —
+    // that would collide on disk and duplicate the manifest entry.
+    const newest = Number(entry.versions?.[0] ?? 0);
+    const ts = String(Math.max(Date.now(), newest + 1));
     const versionDir = path.join(versionsDir, ts);
 
     fs.mkdirSync(versionDir, { recursive: true });

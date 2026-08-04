@@ -1,11 +1,10 @@
 /**
  * Shared HTTP client for CLI commands that talk to the daemon's internal API.
- * Extracted from deploy.ts / mcp.ts to avoid duplication.
+ * Extracted from deploy.ts to avoid duplication.
  */
 import * as http from "node:http";
 import * as fs from "node:fs";
-import * as path from "node:path";
-import * as os from "node:os";
+import { tokenPath } from "../config/index.js";
 
 export class ApiError extends Error {
   constructor(message: string) {
@@ -15,7 +14,7 @@ export class ApiError extends Error {
 }
 
 function getToken(): string {
-  const p = path.join(os.homedir(), ".uptool", "token");
+  const p = tokenPath();
   if (!fs.existsSync(p)) {
     throw new ApiError("Auth token not found. Run: uptool init");
   }

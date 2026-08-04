@@ -1,0 +1,53 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
+## 0.3.0 - 2026-08-01
+
+### Added
+
+- **View counts.** Each deployment tracks how many times its page was actually
+  viewed (HTML page loads only — bundle assets, 404s and HEAD requests don't
+  count) plus when it was last seen. Shown in `uptool list`, persisted across
+  daemon restarts, and kept when you redeploy with `--update`.
+- **`uptool list --json`** — machine-readable output for scripts and for the
+  LLM agent driving uptool. Access keys of protected deployments are never
+  included.
+- **`uptool logs`** — print the daemon log without going through
+  `uptool status`. Supports `-n <lines>` (default 50) and `-f` to follow, which
+  survives log rotation. Reads the file directly, so it works even when the
+  daemon is down — which is when you need it.
+
+### Fixed
+
+- **Request bodies with multi-byte characters over ~64 KB were silently
+  corrupted.** The API decoded each TCP chunk separately, so an accented letter
+  or emoji split across a chunk boundary became a replacement character.
+- **`uptool deploy --name <name>` printed the random slug URL** instead of the
+  name-based one, even though the deployment was reachable at the name.
+- **The live-reload WebSocket ignored `--protect`.** A protected deployment's
+  reload socket accepted any client, leaking the fact that a private deployment
+  had been updated. It now requires the same credentials as the page, and dead
+  sockets are reaped by a heartbeat instead of accumulating.
+- **The public server answered every HTTP method as if it were GET**, including
+  returning a body for `HEAD`. Now only GET and HEAD are served; anything else
+  gets a 405.
+- **`uptool status` mangled log lines at the 16 KB read boundary**, truncating a
+  line and turning a split multi-byte character into `�`.
+- A failed background flush of the manifest could take down the daemon as an
+  uncaught exception; it's now logged, with the in-memory state authoritative.
+
+### Removed (BREAKING)
+
+- **MCP server** (`uptool mcp`). uptool is CLI-only now — an agent that already
+  has a shell doesn't need a second MCP surface exposing the same commands.
+  Replacement: call the CLI directly (`uptool deploy`, `uptool list`, etc.).
+- **Admin web UI** (`uptool admin` and the `GET /admin` API route). Same
+  reasoning — one surface to keep in sync instead of two. Use `uptool list`,
+  `uptool rm`, `uptool rollback` from the CLI instead.
+
+## 0.2.0
+
+Previous release.

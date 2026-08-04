@@ -37,6 +37,7 @@ export async function initCommand(): Promise<void> {
   rl.close();
 
   const config: Config = {
+    ...DEFAULT_CONFIG,
     base_url,
     port: parseInt(portStr, 10),
     api_port: parseInt(apiPortStr, 10),

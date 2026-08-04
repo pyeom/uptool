@@ -17,7 +17,7 @@ function readStdin(): Promise<string> {
 }
 
 /** Recursively collect files in a directory, skipping dotfiles and node_modules. */
-function walkDir(dir: string, baseDir: string): Array<{ rel: string; full: string }> {
+export function walkDir(dir: string, baseDir: string): Array<{ rel: string; full: string }> {
   const results: Array<{ rel: string; full: string }> = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (entry.name.startsWith(".")) continue;
@@ -33,7 +33,7 @@ function walkDir(dir: string, baseDir: string): Array<{ rel: string; full: strin
   return results;
 }
 
-async function buildBody(
+export async function buildBody(
   filePath: string | undefined
 ): Promise<Record<string, unknown>> {
   if (!filePath) {
@@ -111,7 +111,10 @@ function watchAndRedeploy(
         body
       );
       if (result.error) throw new Error(result.error);
-      const url = publicUrl(config, result.slug ?? slug);
+      // `slug` here is the stable identifier (name if one was assigned, else
+      // the random slug) — it doesn't change across redeploys, unlike
+      // result.slug which is always the underlying random slug.
+      const url = publicUrl(config, slug);
       console.log(`↻ redeployed ${url} (${formatTime()})`);
     } catch (err) {
       console.error(`Error redeploying: ${(err as Error).message}`);
@@ -193,13 +196,16 @@ export async function deployCommand(
       );
       if (result.error) throw new Error(result.error);
       const slug = result.slug ?? (opts.update as string);
-      const url = publicUrl(config, slug);
+      // Prefer the name-based URL when a name was assigned (matches list.ts)
+      // — the deployment is reachable at name.<base_url>, not slug.<base_url>.
+      const urlSlug = !opts.update && opts.name ? opts.name : slug;
+      const url = publicUrl(config, urlSlug);
       console.log(`✓ ${url}${expiry}`);
       if (key) console.log(`  key: ${key}  (Basic Auth password — any username)`);
       if (opts.qr) qrcode.generate(url, { small: true });
       if (opts.watch && filePath) {
         watchTarget = filePath;
-        watchSlug = slug;
+        watchSlug = urlSlug;
       }
     } catch (err) {
       console.error(`Error deploying ${filePath ?? "stdin"}: ${(err as Error).message}`);

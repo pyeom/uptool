@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan — uptool: CLI-only, tests y hardening</title>
+<style>
+  :root {
+    --bg: #fbfaf9; --fg: #1c1917; --muted: #78716c; --line: #e7e5e4;
+    --card: #fff; --accent: #c2410c; --ok: #15803d; --warn: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1917; --fg: #f5f5f4; --muted: #a8a29e; --line: #44403c;
+      --card: #292524; --accent: #fb923c; --ok: #4ade80; --warn: #fbbf24;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 3rem 1.5rem; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+  main { max-width: 52rem; margin: 0 auto; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .5rem; letter-spacing: -.02em; }
+  h2 {
+    font-size: 1.25rem; margin: 3rem 0 1rem; padding-bottom: .5rem;
+    border-bottom: 1px solid var(--line); letter-spacing: -.01em;
+  }
+  h3 { font-size: 1rem; margin: 1.75rem 0 .5rem; }
+  h4 { font-size: .9rem; margin: 1.25rem 0 .4rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .sub { color: var(--muted); margin: 0 0 2.5rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 1.25rem 1.5rem; margin: 1rem 0;
+  }
+  .card.pick { border-color: var(--accent); border-width: 2px; }
+  .tag {
+    display: inline-block; font-size: .7rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--accent); border: 1px solid currentColor;
+    border-radius: 99px; padding: .1rem .55rem; vertical-align: middle; margin-left: .5rem;
+  }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: .9rem; }
+  th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+  code {
+    font: .875em ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--line); padding: .1em .4em; border-radius: 4px;
+  }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: .35rem 0; }
+  .meta { display: flex; flex-wrap: wrap; gap: 1.5rem; font-size: .85rem; color: var(--muted); margin-bottom: 2.5rem; }
+  .out li { color: var(--muted); }
+  .del { color: var(--muted); }
+  footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--line); font-size: .85rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+
+  <h1>uptool — CLI-only, tests y hardening</h1>
+  <p class="sub">Achicar la superficie a una sola interfaz, poner una suite de tests que valga como red, y arreglar los defectos que hoy nada detecta.</p>
+  <div class="meta">
+    <span><strong>Fecha</strong> 2026-08-01</span>
+    <span><strong>Esfuerzo</strong> 3–4 días</span>
+    <span><strong>Enfoque</strong> CLI única + suite de tests como entregable central</span>
+    <span><strong>Revisión</strong> 2 — reemplaza al plan anterior</span>
+  </div>
+
+  <h2>Qué cambió respecto de la revisión 1</h2>
+  <p>
+    Se elimina el servidor MCP y el admin web. Si el agente ya tiene la CLI, el MCP es una segunda
+    implementación del mismo contrato con la mitad de las capacidades — hoy expone 4 tools contra 15
+    comandos, y toda fase de "paridad MCP" es trabajo de mantener sincronizadas dos superficies que
+    hacen lo mismo. El admin web tiene el mismo problema en versión visual.
+  </p>
+  <p>
+    A cambio, la suite de tests pasa de ser un ítem dentro de otras fases a ser <strong>la fase más
+    grande del plan</strong>. Es el cambio de fondo: hoy los tests cubren bien las capas internas y
+    <em>cero</em> la superficie que el usuario y el agente realmente tocan.
+  </p>
+
+  <h2>Contexto</h2>
+  <p>
+    uptool v0.2.0 son ~1.900 líneas de TypeScript sobre <code>node:http</code>, sin frameworks: un
+    servidor público que rutea por subdominio wildcard, una API interna en loopback con bearer token,
+    un <code>ManifestStore</code> en memoria que flushea a <code>manifest.json</code>, live-reload por
+    WebSocket, y 15 comandos de CLI. La arquitectura está bien: un solo dueño del estado, escrituras
+    atómicas de manifest, límites de cuota, timeouts contra slowloris, comparaciones en tiempo constante.
+  </p>
+  <p>
+    El problema es que <strong>nada verifica los tipos</strong>. <code>tsup</code> compila con esbuild,
+    que borra tipos sin chequearlos, y CI corre <code>build</code> + <code>test</code>, nunca
+    <code>tsc</code>. Correr <code>npx tsc --noEmit</code> hoy tira 3 errores. Y los 539 tests que pasan
+    localmente son mentira: vitest levanta también los tests de 4 worktrees viejos en
+    <code>.claude/worktrees/</code> — los reales son 6 archivos. Dos semáforos rotos al mismo tiempo.
+  </p>
+
+  <h2>El hueco real de tests</h2>
+  <p>
+    Lo que hay está bien hecho: <code>storage</code>, <code>api</code>, <code>public</code>,
+    <code>config</code> y <code>watch</code> tienen tests directos y razonables. El problema es lo que
+    <em>no</em> tiene ninguno.
+  </p>
+  <table>
+    <thead><tr><th>Módulo</th><th>Líneas</th><th>Estado</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>src/commands/deploy.ts</code></td><td>215</td>
+        <td><strong>Cero tests.</strong> Es el camino más usado de todo el tool: <code>walkDir</code>,
+            resolución del entry point (index.html presente / un solo html / cero / varios), stdin con
+            fences, multi-archivo, <code>--update</code>, <code>--protect</code>, <code>--watch</code>.
+            Todo sin verificar.</td>
+      </tr>
+      <tr>
+        <td>Los otros 12 comandos</td><td>~570</td>
+        <td><strong>Cero tests.</strong> Ningún test ejecuta el binario real: nadie verifica códigos de
+            salida, formato de stdout ni parseo de flags. El contrato con el agente es justamente ese.</td>
+      </tr>
+      <tr>
+        <td><code>src/lib/api-client.ts</code></td><td>72</td>
+        <td>Cero. Token ausente, token vacío, <code>ECONNREFUSED</code>, respuesta no-JSON — cuatro caminos
+            de error, ninguno probado.</td>
+      </tr>
+      <tr>
+        <td><code>src/server/ws.ts</code></td><td>76</td>
+        <td>Cero.</td>
+      </tr>
+      <tr>
+        <td><code>src/config/index.ts</code></td><td>153</td>
+        <td>Parcial. Sólo <code>parseTtlMs</code> y <code>publicUrl</code>. Sin probar: round-trip de
+            <code>loadConfig</code>/<code>saveConfig</code>, permisos 0600 del token,
+            <code>resolvePath</code> con <code>~</code>.</td>
+      </tr>
+      <tr>
+        <td><code>readLogTail</code> en <code>status.ts</code></td><td>14</td>
+        <td>Cero. Lógica de lectura por chunk desde el final del archivo — exactamente el tipo de código
+            con casos borde (archivo menor al chunk, vacío, sin salto final).</td>
+      </tr>
+      <tr>
+        <td>Cobertura medida</td><td>—</td>
+        <td><strong>No existe.</strong> Sin <code>@vitest/coverage-v8</code>, sin umbral, sin gate.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Investigación</h2>
+  <p class="sub">Qué hacen los comparables, y qué de eso aplica a un tool que corre en tu propia máquina.</p>
+  <table>
+    <thead><tr><th>Referencia</th><th>Stack</th><th>Escala / modelo</th><th>Qué tomamos</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><a href="https://previewship.com/guides/share-claude-html-artifacts">PreviewShip</a></td>
+        <td>SaaS con CLI + servidor MCP</td>
+        <td>Orientado a output de Claude Code / artifacts</td>
+        <td>Mantienen CLI y MCP en paralelo porque venden a usuarios que no tienen shell. uptool corre en la
+            máquina del agente: la premisa no aplica, y sostener dos superficies sí cuesta.</td>
+      </tr>
+      <tr>
+        <td><a href="https://hummingdeck.com/blog/host-single-html-file">tiiny.host / HummingDeck</a></td>
+        <td>SaaS gestionado, upload por web</td>
+        <td>Free ~3 MB; password recién en planes de $18+/mes</td>
+        <td>Lo que cobran es password + métricas de vistas. uptool ya regala <code>--protect</code>; las
+            métricas se quedan, pero como columna de <code>uptool list</code>, no como dashboard.</td>
+      </tr>
+      <tr>
+        <td><a href="https://use-apify.com/blog/vercel-alternatives-2026">Coolify</a></td>
+        <td>Self-hosted, Docker + Traefik, DNS wildcard</td>
+        <td>VPS de 4 GB; preview por rama</td>
+        <td>Mismo modelo de wildcard DNS, pero con TLS automático — y por eso arrastran Traefik entero.
+            Confirma que auto-TLS es la feature grande que falta, y también lo que cuesta.</td>
+      </tr>
+      <tr>
+        <td><a href="https://pinggy.io/blog/best_ngrok_alternatives/">Pinggy / zrok / frp</a></td>
+        <td>Túneles self-hosted (Go/Rust)</td>
+        <td>Producción, multi-protocolo</td>
+        <td>Resuelven transporte, no ciclo de vida del contenido (TTL, versiones, rollback). No compiten con
+            uptool: lo complementan. Refuerza no meterse a hacer túnel propio.</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    <strong>Conclusión:</strong> no hay nada que reemplace a uptool. El nicho — "el LLM deploya en tu
+    máquina, en tu dominio, sin subir nada a un tercero" — sigue vacío entre los SaaS (suben tu contenido)
+    y los túneles (no gestionan contenido). El proyecto tiene razón de existir; achicarlo a una sola
+    interfaz lo afila, no lo recorta.
+  </p>
+
+  <h2>Hallazgos concretos del código</h2>
+  <p class="sub">Todo verificado leyendo el archivo, no inferido.</p>
+  <table>
+    <thead><tr><th>#</th><th>Hallazgo</th><th>Dónde</th><th>Impacto</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td><strong>El typecheck no corre en ningún lado y hoy falla.</strong> <code>tsup</code> usa esbuild
+            (borra tipos, no los valida) y CI hace <code>build</code>+<code>test</code>. 3 errores activos.</td>
+        <td><code>.github/workflows/ci.yml</code>, <code>src/commands/init.ts:39</code>,
+            <code>src/storage/index.ts:171,184</code></td>
+        <td>Alto</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td><strong>Los tests reales son 6 archivos, no 27.</strong> <code>vitest.config.ts</code> no excluye
+            <code>.claude/worktrees/</code>: corre los tests de 4 worktrees obsoletos. 539 tests / 13 s de
+            ruido que puede tanto tapar una falla como fallar por código viejo.</td>
+        <td><code>vitest.config.ts</code></td>
+        <td>Alto</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td><strong>Corrupción UTF-8 en bodies grandes.</strong> <code>readBody</code> acumula
+            <code>data += chunk.toString()</code>: un carácter multibyte partido entre dos chunks TCP se
+            decodifica como <code>�</code>. Cualquier HTML con acentos o emoji por encima de ~64 KB.</td>
+        <td><code>src/server/api.ts:31</code></td>
+        <td>Alto — corrupción silenciosa</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td><strong><code>deploy --name dashboard</code> imprime la URL equivocada.</strong> Usa el slug
+            aleatorio en vez del nombre. <code>list</code> sí usa el nombre: dos caminos, dos criterios.</td>
+        <td><code>src/commands/deploy.ts:195-196</code></td>
+        <td>Medio</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td><strong>La versión está hardcodeada en 3 lugares</strong> — <code>package.json</code>,
+            <code>cli.ts:28</code> y el <code>serverInfo</code> de MCP. Dos de esos tres desaparecen con la
+            amputación; el que queda pasa a leerse de <code>package.json</code>.</td>
+        <td><code>src/cli.ts</code></td>
+        <td>Medio</td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td><strong>El WebSocket de live-reload no valida la key de los deploys protegidos.</strong> El
+            upgrade a <code>/__lr</code> sólo chequea que el slug exista. No filtra contenido, pero revela
+            que un deploy privado se actualizó. Tampoco hay ping/pong: las conexiones muertas se acumulan.</td>
+        <td><code>src/server/ws.ts:31-59</code></td>
+        <td>Medio</td>
+      </tr>
+      <tr>
+        <td>7</td>
+        <td><strong><code>extractSlug</code> duplicado literal</strong> entre servidor público y WebSocket.</td>
+        <td><code>src/server/public.ts:67</code>, <code>src/server/ws.ts:9</code></td>
+        <td>Bajo</td>
+      </tr>
+      <tr>
+        <td>8</td>
+        <td><strong>La ruta del token está escrita a mano en el api-client</strong> en vez de usar
+            <code>tokenPath()</code> de config — tercera copia del mismo path.</td>
+        <td><code>src/lib/api-client.ts:18</code></td>
+        <td>Bajo</td>
+      </tr>
+      <tr>
+        <td>9</td>
+        <td><strong>El tope real de un bundle no es el que dice la config.</strong> Los bundles viajan como
+            base64 dentro de un JSON: <code>max_body_bytes</code> de 10 MB da un techo efectivo de ~7,5 MB.</td>
+        <td><code>src/commands/deploy.ts:67</code>, <code>src/config/index.ts:52</code></td>
+        <td>Bajo — documentar, no rediseñar</td>
+      </tr>
+      <tr>
+        <td>10</td>
+        <td><strong>El servidor público trata todo método como GET</strong> y no maneja <code>HEAD</code>
+            (devuelve body).</td>
+        <td><code>src/server/public.ts:121-190</code></td>
+        <td>Bajo</td>
+      </tr>
+      <tr>
+        <td>11</td>
+        <td><strong><code>rm</code> y <code>rollback</code> no urlencodean el slug</strong> al armar el path
+            (<code>touch</code> sí).</td>
+        <td><code>src/commands/rm.ts:204</code>, <code>src/commands/rollback.ts:178</code></td>
+        <td>Bajo</td>
+      </tr>
+      <tr>
+        <td>12</td>
+        <td><strong>Higiene:</strong> 4 git worktrees de agentes quedaron registrados ocupando disco. Sin
+            <code>CHANGELOG</code>.</td>
+        <td><code>.claude/worktrees/</code></td>
+        <td>Bajo</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Plan de implementación</h2>
+
+  <h3>Fase 1 — Recuperar la señal</h3>
+  <p class="sub">Entregable: el build y los tests vuelven a decir la verdad. Bloquea a todo lo demás — sin esto, cualquier arreglo posterior se verifica contra un semáforo roto.</p>
+  <table>
+    <thead><tr><th>Tarea</th><th>Archivos</th><th>Depende de</th></tr></thead>
+    <tbody>
+      <tr><td>Script <code>typecheck</code> (<code>tsc --noEmit</code>), enganchado a <code>build</code> y al job de CI</td><td><code>package.json</code>, <code>.github/workflows/ci.yml</code></td><td>—</td></tr>
+      <tr><td>Excluir <code>.claude/**</code> del <code>include</code> de vitest; verificar que quedan 6 archivos</td><td><code>vitest.config.ts</code></td><td>—</td></tr>
+      <tr><td>Arreglar los 3 errores de tipos: <code>init</code> arma un Config parcial → partir de <code>DEFAULT_CONFIG</code>; el merge de declaración de <code>ManifestStore</code> → exportar la <code>interface</code> junto con la clase</td><td><code>src/commands/init.ts</code>, <code>src/storage/index.ts</code></td><td>typecheck activo</td></tr>
+      <tr><td>Podar los worktrees viejos (<code>git worktree prune</code> + borrar los 4 directorios)</td><td><code>.claude/worktrees/</code></td><td>—</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Listo cuando:</strong> <code>npm run typecheck</code> sale limpio, <code>npm test</code> reporta 6 archivos, y CI falla si se mete un error de tipos a propósito.</p>
+
+  <h3>Fase 2 — Amputar MCP y admin</h3>
+  <p class="sub">Entregable: una sola superficie. Va antes que los arreglos para no arreglar código que se va a borrar.</p>
+  <table>
+    <thead><tr><th>Tarea</th><th>Archivos</th><th>Depende de</th></tr></thead>
+    <tbody>
+      <tr><td>Borrar el servidor MCP y su comando</td><td class="del"><code>src/commands/mcp.ts</code> (−241)</td><td>Fase 1</td></tr>
+      <tr><td>Borrar el admin: página, comando y ruta <code>GET /admin</code> de la API — con eso se va también la auth por token en query string, que era la única ruta que esquivaba el header <code>Authorization</code></td><td class="del"><code>src/server/admin.ts</code> (−146), <code>src/commands/admin.ts</code> (−26), <code>src/server/api.ts</code></td><td>Fase 1</td></tr>
+      <tr><td>Sacar ambos comandos del CLI y sus 3 tests de admin de la suite de API</td><td><code>src/cli.ts</code>, <code>test/api.test.ts</code></td><td>borrados</td></tr>
+      <tr><td>Actualizar README (secciones "Admin page" y "LLM integration"), bump a <strong>0.3.0</strong> y estrenar <code>CHANGELOG.md</code> anotando el breaking change</td><td><code>README.md</code>, <code>package.json</code>, <code>CHANGELOG.md</code> (nuevo)</td><td>borrados</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Listo cuando:</strong> <code>uptool --help</code> no menciona <code>mcp</code> ni <code>admin</code>; la API responde 404 en <code>/admin</code>; se van ~420 líneas de <code>src/</code> y el <code>isAllowedApiHost</code> queda como única defensa necesaria contra DNS-rebinding.</p>
+
+  <h3>Fase 3 — Correctitud</h3>
+  <p class="sub">Entregable: los defectos que el agujero de la Fase 1 dejaba pasar. Cada ítem entra con su test.</p>
+  <table>
+    <thead><tr><th>Tarea</th><th>Archivos</th><th>Depende de</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Bug UTF-8:</strong> acumular <code>Buffer[]</code> y hacer <code>Buffer.concat(...).toString("utf8")</code> una vez al final, en vez de concatenar strings por chunk</td><td><code>src/server/api.ts</code>, <code>test/api.test.ts</code></td><td>Fase 1</td></tr>
+      <tr><td><code>deploy --name</code> imprime la URL con nombre — misma regla que <code>list</code> (<code>name ?? slug</code>)</td><td><code>src/commands/deploy.ts</code></td><td>Fase 1</td></tr>
+      <tr><td>Versión leída de <code>package.json</code> (<code>resolveJsonModule</code> ya está activo)</td><td><code>src/cli.ts</code></td><td>Fase 2</td></tr>
+      <tr><td>Mover <code>extractSlug</code> a <code>src/lib/slug.ts</code>; consumirlo desde ambos servidores. El api-client pasa a usar <code>tokenPath()</code></td><td><code>src/lib/slug.ts</code> (nuevo), <code>src/server/public.ts</code>, <code>src/server/ws.ts</code>, <code>src/lib/api-client.ts</code></td><td>Fase 1</td></tr>
+      <tr><td>WebSocket: validar la key del deploy en el upgrade y agregar heartbeat ping/pong con limpieza de clientes muertos</td><td><code>src/server/ws.ts</code></td><td>dedupe</td></tr>
+      <tr><td><code>encodeURIComponent</code> en los slugs de <code>rm</code> y <code>rollback</code>; rechazar métodos que no sean GET/HEAD en el servidor público y responder HEAD sin body</td><td><code>src/commands/rm.ts</code>, <code>src/commands/rollback.ts</code>, <code>src/server/public.ts</code></td><td>—</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Listo cuando:</strong> un deploy de 200 KB con acentos y emoji vuelve byte-idéntico; <code>deploy --name x</code> imprime <code>x.tudominio</code>; un cliente WS sin credenciales contra un slug protegido es rechazado.</p>
+
+  <h3>Fase 4 — Suite de tests sólida <span class="tag">núcleo del plan</span></h3>
+  <p class="sub">Entregable: una red que atrapa regresiones en la superficie que el usuario y el agente realmente tocan — no sólo en las capas internas. Es la fase más larga: ~1,5–2 días.</p>
+
+  <h4>4a · Instrumentar</h4>
+  <table>
+    <thead><tr><th>Tarea</th><th>Archivos</th><th>Depende de</th></tr></thead>
+    <tbody>
+      <tr><td>Agregar <code>@vitest/coverage-v8</code>, script <code>test:coverage</code> y reporte por archivo</td><td><code>package.json</code>, <code>vitest.config.ts</code></td><td>Fase 1</td></tr>
+      <tr><td>Helper de test compartido: <code>HOME</code> temporal + puertos efímeros + daemon de usar y tirar. Ningún test puede tocar el <code>~/.uptool</code> real — hoy nada lo garantiza</td><td><code>test/helpers.ts</code> (nuevo)</td><td>—</td></tr>
+      <tr><td>Helper que ejecuta el binario compilado (<code>node dist/cli.js …</code>) y devuelve stdout, stderr y exit code</td><td><code>test/helpers.ts</code></td><td>helper de daemon</td></tr>
+    </tbody>
+  </table>
+
+  <h4>4b · Cubrir lo que hoy tiene cero</h4>
+  <table>
+    <thead><tr><th>Suite</th><th>Qué verifica</th><th>Archivo</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>CLI end-to-end</strong><br><span class="muted">la más importante</span></td>
+        <td>Corriendo el binario real contra un daemon efímero: <code>deploy</code> de archivo, de stdin, de directorio y de varios archivos; <code>--update</code>, <code>--name</code>, <code>--protect</code>, <code>--qr</code>; después <code>list</code>, <code>rm</code>, <code>touch</code>, <code>rollback</code>, <code>status --json</code>, <code>stop</code>. Se afirma sobre <strong>exit code y stdout</strong>, que es el contrato con el agente.</td>
+        <td><code>test/cli.test.ts</code> (nuevo)</td>
+      </tr>
+      <tr>
+        <td><strong>deploy — unitario</strong></td>
+        <td>Exportar <code>walkDir</code> y <code>buildBody</code> para probarlas directo: resolución del entry point en los 4 casos (index.html presente / un solo html / cero html / varios sin index), skip de dotfiles y <code>node_modules</code>, rutas relativas con separador normalizado, stdin con fences markdown, stdin vacío.</td>
+        <td><code>test/deploy.test.ts</code> (nuevo)</td>
+      </tr>
+      <tr>
+        <td><strong>api-client</strong></td>
+        <td>Token ausente, token vacío, <code>ECONNREFUSED</code> → mensaje "server not running", respuesta no-JSON → <code>ApiError</code>, header <code>Authorization</code> bien armado.</td>
+        <td><code>test/api-client.test.ts</code> (nuevo)</td>
+      </tr>
+      <tr>
+        <td><strong>WebSocket</strong></td>
+        <td>Upgrade válido, path equivocado destruye el socket, host sin slug destruye el socket, broadcast llega sólo al slug correcto, rechazo sin credenciales en deploy protegido, heartbeat limpia clientes muertos.</td>
+        <td><code>test/ws.test.ts</code> (nuevo)</td>
+      </tr>
+      <tr>
+        <td><strong>config</strong></td>
+        <td>Round-trip <code>saveConfig</code>/<code>loadConfig</code>, defaults aplicados a un TOML parcial, campos desconocidos preservados, <code>resolvePath</code> con <code>~</code>, y que el token quede en <strong>0600</strong> tanto al crear como al sobrescribir.</td>
+        <td><code>test/config.test.ts</code> (extender)</td>
+      </tr>
+      <tr>
+        <td><strong>readLogTail</strong></td>
+        <td>Archivo más chico que el chunk, más grande que el chunk, vacío, sin salto de línea final, y con menos líneas que las pedidas.</td>
+        <td><code>test/status.test.ts</code> (nuevo)</td>
+      </tr>
+      <tr>
+        <td><strong>cuotas de storage</strong></td>
+        <td>Estimación de tamaño desde base64 con 0, 1 y 2 caracteres de padding; bytes recuperados en <code>update</code> con versionado activo y desactivado; <code>FILE_TOO_LARGE</code> vs <code>QUOTA_EXCEEDED</code>; <code>flushNow</code> en shutdown.</td>
+        <td><code>test/storage.test.ts</code> (extender)</td>
+      </tr>
+      <tr>
+        <td><strong>servidor público</strong></td>
+        <td>HEAD sin body, métodos rechazados, <code>Cache-Control</code> por tipo de contenido (protegido / HTML / asset), rate limiter en el límite y pasado el límite, y que la ventana se purgue.</td>
+        <td><code>test/public.test.ts</code> (extender)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h4>4c · Que no se pudra</h4>
+  <table>
+    <thead><tr><th>Tarea</th><th>Archivos</th><th>Depende de</th></tr></thead>
+    <tbody>
+      <tr><td>Fijar el umbral de cobertura en el valor que la suite alcance <em>menos ~3 puntos</em>, y que CI falle por debajo. Un número medido y con margen se sostiene; un 90% aspiracional se termina desactivando</td><td><code>vitest.config.ts</code>, <code>.github/workflows/ci.yml</code></td><td>4b</td></tr>
+      <tr><td>Job de CI corriendo <code>typecheck</code> + <code>test:coverage</code> en Node 20 y 22 (la matriz ya existe)</td><td><code>.github/workflows/ci.yml</code></td><td>umbral</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Listo cuando:</strong> cada comando de la CLI tiene al menos un test que ejecuta el binario real y afirma sobre su exit code; la suite corre sin tocar el <code>~/.uptool</code> del usuario; hay un número de cobertura publicado y CI falla si baja.</p>
+
+  <h3>Fase 5 — Observabilidad por CLI</h3>
+  <p class="sub">Entregable: saber qué pasa con lo deployado sin salir de la terminal.</p>
+  <table>
+    <thead><tr><th>Tarea</th><th>Archivos</th><th>Depende de</th></tr></thead>
+    <tbody>
+      <tr><td>Agregar <code>hits</code> y <code>last_seen</code> a <code>ManifestEntry</code>; método <code>recordHit(slug)</code> que incrementa en memoria y se apoya en el <code>scheduleFlush()</code> debounced que ya existe — cero I/O extra por request</td><td><code>src/storage/index.ts</code>, <code>test/storage.test.ts</code></td><td>Fase 1</td></tr>
+      <tr><td>Llamar <code>recordHit</code> desde el servidor público sólo en respuestas HTML 200, no en assets, para que el número signifique "visitas" y no "requests"</td><td><code>src/server/public.ts</code>, <code>test/public.test.ts</code></td><td><code>recordHit</code></td></tr>
+      <tr><td>Mostrar hits y última visita en <code>uptool list</code>, más <code>--json</code> para que sea consumible por scripts y por el agente</td><td><code>src/commands/list.ts</code>, <code>test/cli.test.ts</code></td><td><code>recordHit</code></td></tr>
+      <tr><td>Comando <code>uptool logs [-f] [-n N]</code>: reusar <code>readLogTail</code>, que en la Fase 4 ya quedó testeado y extraído</td><td><code>src/commands/logs.ts</code> (nuevo), <code>src/cli.ts</code></td><td>Fase 4b</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Listo cuando:</strong> abrir un deploy dos veces muestra <code>hits: 2</code> en <code>uptool list</code>; los hits sobreviven a un reinicio del daemon; <code>uptool logs -f</code> muestra un deploy nuevo en vivo.</p>
+
+  <h2>Fuera de alcance</h2>
+  <ul class="out">
+    <li><strong>Servidor MCP.</strong> Eliminado, no diferido. La CLI es la interfaz para el agente.</li>
+    <li><strong>Cualquier interfaz visual</strong> — admin web, dashboard, upload por browser.</li>
+    <li><strong>TLS automático (ACME/Let's Encrypt).</strong> Wildcard exige challenge DNS-01, o sea credenciales de API del DNS del usuario. Sigue siendo <code>cert_file</code>/<code>key_file</code> o terminar TLS en Cloudflare Tunnel.</li>
+    <li><strong>launchd para macOS y servicio de Windows.</strong> <code>install-service</code> sigue siendo sólo systemd/Linux.</li>
+    <li><strong>Analítica por visitante</strong> (IP, user-agent, ruta): el contador es en memoria, sin dato personal en disco.</li>
+    <li><strong>Rediseño del transporte de bundles.</strong> El base64-sobre-JSON queda; el techo (~7,5 MB) se documenta.</li>
+    <li><strong>Compresión y ETag/304 en el servidor público.</strong> Optimización sin problema reportado.</li>
+    <li><strong>Tests de mutación y property-based.</strong> Primero que exista la red; refinarla es otra conversación.</li>
+  </ul>
+
+  <h2>Riesgos abiertos</h2>
+  <ul>
+    <li><strong>Sacar el MCP rompe a quien ya lo tenga configurado.</strong> Mitigación: bump a 0.3.0 y <code>CHANGELOG</code> explícito; el reemplazo es una línea de prompt diciéndole al agente que corra <code>uptool deploy</code>, que es lo que el README ya recomienda como camino principal.</li>
+    <li><strong>Los tests de CLI dependen de <code>dist/</code>.</strong> Si se corren sin buildear, fallan de forma confusa. Mitigación: que <code>test:cli</code> dependa de <code>build</code>, y que el helper falle con un mensaje claro si no encuentra el binario.</li>
+    <li><strong>Los tests que levantan daemons pueden dejar puertos o procesos colgados</strong> y volver la suite intermitente. Mitigación: puertos efímeros (puerto 0), <code>afterEach</code> que mata el proceso, y timeout por test.</li>
+    <li><strong>Activar <code>tsc</code> puede destapar más de 3 errores</strong> — el compilador se frena en el primero de cada archivo. Mitigación: la Fase 1 es primera y aislada.</li>
+    <li><strong>Los tests de los worktrees podían estar tapando una falla real.</strong> Mitigación: correr la suite recortada antes de tocar código, para tener una línea de base honesta.</li>
+    <li><strong>Los hits agregan escrituras al manifest con cada visita.</strong> Mitigación: el <code>scheduleFlush()</code> debounced ya colapsa las escrituras a una cada 500 ms como mucho.</li>
+  </ul>
+
+  <footer>
+    Plan generado con <code>/postplan</code> · 2026-08-01 · Revisión 2 · Pendiente de aprobación
+  </footer>
+
+</main>
+</body>
+</html>

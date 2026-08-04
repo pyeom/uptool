@@ -90,15 +90,26 @@ export async function statusCommand(opts: { json?: boolean } = {}): Promise<void
  * Read the last `lineCount` lines of a file without loading it whole.
  * Reads a bounded chunk from the end — plenty for 10 log lines.
  */
-function readLogTail(logFile: string, lineCount: number): string {
+export function readLogTail(logFile: string, lineCount: number): string {
   const CHUNK = 16 * 1024;
   const fd = fs.openSync(logFile, "r");
   try {
     const size = fs.fstatSync(fd).size;
     const readLen = Math.min(size, CHUNK);
+    const startOffset = size - readLen;
     const buf = Buffer.alloc(readLen);
-    fs.readSync(fd, buf, 0, readLen, size - readLen);
-    const lines = buf.toString("utf8").trim().split("\n");
+    fs.readSync(fd, buf, 0, readLen, startOffset);
+    let text = buf.toString("utf8");
+    if (startOffset > 0) {
+      // The chunk didn't start at byte 0, so it may start mid-line — and if
+      // it starts mid-character, decoding to utf8 above already turned the
+      // split bytes into U+FFFD. Either way, that first (partial) line is
+      // garbage: drop everything up to and including its newline.
+      const nl = text.indexOf("\n");
+      text = nl === -1 ? "" : text.slice(nl + 1);
+    }
+    const trimmed = text.trim();
+    const lines = trimmed === "" ? [] : trimmed.split("\n");
     return lines.slice(-lineCount).join("\n");
   } finally {
     fs.closeSync(fd);

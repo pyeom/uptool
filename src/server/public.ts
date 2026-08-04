@@ -1,9 +1,10 @@
-import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as https from "node:https";
 import { Config } from "../config/index.js";
 import { ManifestStore } from "../storage/index.js";
+import { extractSlug } from "../lib/slug.js";
+import { basicAuthOk } from "../lib/basic-auth.js";
 
 /**
  * Tiny inline script injected before </body> when live_reload is enabled.
@@ -16,10 +17,6 @@ const RELOAD_SCRIPT =
   `ws.onmessage=function(e){if(e.data==='reload')location.reload();};` +
   `ws.onclose=function(){setTimeout(function(){location.reload();},2000);};` +
   `}());</script>`;
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 /**
  * Fixed-window per-IP rate limiter. Dependency-free; memory is bounded by
@@ -63,14 +60,6 @@ function clientIp(req: http.IncomingMessage, trustProxy: boolean): string {
   return req.socket.remoteAddress ?? "unknown";
 }
 
-/** Extract the subdomain slug from the Host header. Returns null if not a valid subdomain. */
-function extractSlug(host: string, baseUrl: string): string | null {
-  const base = baseUrl.replace(/^https?:\/\//, "");
-  const slug = host.replace(new RegExp(`\\.${escapeRegex(base)}(:\\d+)?$`), "");
-  if (!slug || slug === host) return null;
-  return slug;
-}
-
 function applySecurityHeaders(
   headers: http.OutgoingHttpHeaders,
   config: Config
@@ -97,33 +86,18 @@ function sendErrorPage(
   res.end(`<html><body><h1>${status}</h1><p>${message}</p></body></html>`);
 }
 
-/**
- * Check Basic Auth against a deployment's access key.
- * Any username is accepted; the password must equal the key (constant-time).
- */
-function basicAuthOk(req: http.IncomingMessage, key: string): boolean {
-  const header = req.headers.authorization ?? "";
-  if (!header.startsWith("Basic ")) return false;
-  let decoded: string;
-  try {
-    decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
-  } catch {
-    return false;
-  }
-  const sep = decoded.indexOf(":");
-  if (sep === -1) return false;
-  const password = Buffer.from(decoded.slice(sep + 1));
-  const expected = Buffer.from(key);
-  if (password.length !== expected.length) return false;
-  return crypto.timingSafeEqual(password, expected);
-}
-
 function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   config: Config,
   store: ManifestStore
 ): void {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    res.writeHead(405, { "Content-Type": "text/plain", Allow: "GET, HEAD" });
+    res.end("Method Not Allowed");
+    return;
+  }
+
   const host = req.headers.host ?? "";
   const slugOrName = extractSlug(host, config.base_url);
 
@@ -186,7 +160,12 @@ function handleRequest(
 
   headers["Content-Length"] = body.length;
   res.writeHead(200, headers);
-  res.end(body);
+  res.end(req.method === "HEAD" ? undefined : body);
+
+  // Count actual page views only: successful, HTML, not a HEAD probe.
+  if (isHtml && req.method === "GET") {
+    store.recordHit(slugOrName);
+  }
 }
 
 /**

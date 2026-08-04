@@ -72,7 +72,7 @@ export function serveCommand(opts: { foreground?: boolean }): void {
   // Live reload: attach WebSocket manager and wire store 'updated' events
   let wsManager: WsManager | null = null;
   if (config.live_reload) {
-    wsManager = new WsManager(publicServer, config);
+    wsManager = new WsManager(publicServer, config, store);
     store.on("updated", (slug: string) => wsManager!.broadcast(slug, "reload"));
   }
 

@@ -2,7 +2,6 @@ import * as http from "node:http";
 import * as crypto from "node:crypto";
 import { Config } from "../config/index.js";
 import { ManifestStore, stripMarkdownFences, isValidName } from "../storage/index.js";
-import { renderAdminPage } from "./admin.js";
 
 const DEFAULT_ENTRY = "index.html";
 
@@ -12,7 +11,7 @@ const DEFAULT_ENTRY = "index.html";
  */
 function readBody(req: http.IncomingMessage, maxBytes: number): Promise<string> {
   return new Promise((resolve, reject) => {
-    let data = "";
+    const chunks: Buffer[] = [];
     let size = 0;
 
     let overflow = false;
@@ -28,10 +27,10 @@ function readBody(req: http.IncomingMessage, maxBytes: number): Promise<string> 
         // the 413 response while the connection is open.
         return;
       }
-      if (!overflow) data += chunk.toString();
+      if (!overflow) chunks.push(chunk);
     });
 
-    req.on("end", () => { if (!overflow) resolve(data); });
+    req.on("end", () => { if (!overflow) resolve(Buffer.concat(chunks).toString("utf8")); });
     req.on("error", (err) => { if (!overflow) reject(err); });
   });
 }
@@ -59,11 +58,6 @@ function safeEqual(a: string, b: string): boolean {
 /** Constant-time comparison of the Authorization header against the token. */
 function isAuthorized(req: http.IncomingMessage, token: string): boolean {
   return safeEqual(req.headers.authorization ?? "", `Bearer ${token}`);
-}
-
-function html(res: http.ServerResponse, status: number, body: string): void {
-  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
-  res.end(body);
 }
 
 export function createApiServer(
@@ -98,23 +92,6 @@ async function handleApiRequest(
     // the attacker's hostname, not a loopback name.
     if (!isAllowedApiHost(req.headers.host ?? "")) {
       json(res, 403, { error: "Forbidden host" });
-      return;
-    }
-
-    // ------------------------------------------------------------------
-    // GET /admin?token=<token> — local admin web UI. Auth comes from the
-    // query param (a page load can't set an Authorization header), checked
-    // with the same timing-safe comparison as the header-based auth below.
-    // The Host loopback check above still applies — this route does not
-    // bypass it.
-    // ------------------------------------------------------------------
-    if (req.method === "GET" && url.pathname === "/admin") {
-      const provided = url.searchParams.get("token") ?? "";
-      if (!safeEqual(provided, token)) {
-        html(res, 401, "<!doctype html><title>401</title><body>Unauthorized</body>");
-        return;
-      }
-      html(res, 200, renderAdminPage(config));
       return;
     }
 

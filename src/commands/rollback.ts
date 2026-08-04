@@ -8,7 +8,7 @@ export async function rollbackCommand(slug: string): Promise<void> {
     const result = await callApi<{ restored?: string; error?: string }>(
       config.api_port,
       "POST",
-      `/files/${slug}/rollback`
+      `/files/${encodeURIComponent(slug)}/rollback`
     );
 
     if (result.error) {

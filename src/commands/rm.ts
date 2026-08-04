@@ -8,7 +8,7 @@ export async function rmCommand(slug: string): Promise<void> {
     const result = await callApi<{ removed: boolean; error?: string }>(
       config.api_port,
       "DELETE",
-      `/files/${slug}`
+      `/files/${encodeURIComponent(slug)}`
     );
     if (result.removed) {
       console.log(`✓ Removed ${slug}`);

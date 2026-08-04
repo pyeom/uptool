@@ -21,6 +21,10 @@ export interface ManifestEntry {
   key?: string;
   /** Saved version timestamps (newest first). Used for rollback. */
   versions?: string[];
+  /** View count (HTML page views only). Absent = 0. */
+  hits?: number;
+  /** Epoch ms of the most recent view. Absent = never viewed. */
+  last_seen?: number;
 }
 
 export type Manifest = Record<string, ManifestEntry>;
@@ -168,7 +172,7 @@ export function ensureStorageDir(storageDir: string): string {
 // ---------------------------------------------------------------------------
 
 // Typed EventEmitter declaration for TypeScript
-declare interface ManifestStore {
+export declare interface ManifestStore {
   on(event: "updated", listener: (slug: string) => void): this;
   emit(event: "updated", slug: string): boolean;
 }
@@ -249,8 +253,15 @@ export class ManifestStore extends EventEmitter {
   private scheduleFlush(): void {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = setTimeout(() => {
-      saveManifestSync(this.storageDir, this.manifest);
       this.flushTimer = null;
+      // This runs detached on a timer, so a throw here is an uncaught exception
+      // rather than something a caller can handle. Keep the in-memory manifest
+      // authoritative and log instead — the next mutation schedules a retry.
+      try {
+        saveManifestSync(this.storageDir, this.manifest);
+      } catch (err) {
+        console.error(`[uptool] manifest flush failed: ${(err as Error).message}`);
+      }
     }, 500);
   }
 
@@ -283,8 +294,8 @@ export class ManifestStore extends EventEmitter {
   }
 
   list(): Array<Omit<ManifestEntry, "key"> & { slug: string; protected: boolean }> {
-    // Never serialize the access key — list() feeds GET /files (CLI, MCP,
-    // admin page). Expose only a `protected` flag.
+    // Never serialize the access key — list() feeds GET /files (CLI).
+    // Expose only a `protected` flag.
     return Object.entries(this.manifest).map(([slug, entry]) => {
       const { key, ...rest } = entry;
       return { slug, ...rest, protected: Boolean(key) };
@@ -489,6 +500,22 @@ export class ManifestStore extends EventEmitter {
     }
 
     return { buffer: fs.readFileSync(fullPath), contentType: mimeForPath(fullPath) };
+  }
+
+  /**
+   * Record a page view for `slug`. Called on the hot request path (every
+   * HTML view), so it must stay cheap: in-memory increment only, no extra
+   * disk I/O — it rides the existing debounced flush. Unknown slug is a
+   * silent no-op.
+   */
+  recordHit(slugOrName: string): void {
+    const slug = this.resolveSlug(slugOrName);
+    if (!slug) return;
+    const entry = this.manifest[slug];
+    if (!entry) return;
+    entry.hits = (entry.hits ?? 0) + 1;
+    entry.last_seen = Date.now();
+    this.scheduleFlush();
   }
 
   // -------------------------------------------------------------------------

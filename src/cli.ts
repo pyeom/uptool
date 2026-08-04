@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { version } from "../package.json";
 import { initCommand } from "./commands/init.js";
 import { serveCommand } from "./commands/serve.js";
 import { deployCommand } from "./commands/deploy.js";
@@ -9,9 +10,8 @@ import { statusCommand } from "./commands/status.js";
 import { installServiceCommand } from "./commands/install-service.js";
 import { touchCommand } from "./commands/touch.js";
 import { openCommand } from "./commands/open.js";
-import { adminCommand } from "./commands/admin.js";
 import { rollbackCommand } from "./commands/rollback.js";
-import { mcpCommand } from "./commands/mcp.js";
+import { logsCommand } from "./commands/logs.js";
 import {
   setUrlCommand,
   setPortCommand,
@@ -25,7 +25,7 @@ const program = new Command();
 program
   .name("uptool")
   .description("Serve LLM-generated HTML files via wildcard subdomains on your own domain")
-  .version("0.2.0");
+  .version(version);
 
 program
   .command("init")
@@ -66,7 +66,8 @@ program
 program
   .command("list")
   .description("List all deployed files")
-  .action(() => listCommand());
+  .option("--json", "Machine-readable output", false)
+  .action((opts) => listCommand(opts));
 
 program
   .command("rm <slug>")
@@ -93,6 +94,13 @@ program
   .description("Show daemon status and recent log")
   .option("--json", "Machine-readable output for monitoring (exit 1 if unhealthy)", false)
   .action((opts) => statusCommand(opts));
+
+program
+  .command("logs")
+  .description("Print the daemon log")
+  .option("-n, --lines <n>", "Number of lines to show (default 50)")
+  .option("-f, --follow", "Follow the log as it grows (Ctrl-C to stop)", false)
+  .action((opts) => logsCommand(opts));
 
 program
   .command("install-service")
@@ -123,15 +131,5 @@ program
   .command("config")
   .description("Reconfigure all settings interactively")
   .action(() => configCommand());
-
-program
-  .command("admin")
-  .description("Open the local admin web UI (100% local, token-authenticated)")
-  .action(() => adminCommand());
-
-program
-  .command("mcp")
-  .description("Start MCP server (stdio, for Claude Code integration)")
-  .action(() => mcpCommand());
 
 program.parse();

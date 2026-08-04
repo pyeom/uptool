@@ -1,6 +1,6 @@
 {
   "name": "uptool",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Serve LLM-generated HTML files via wildcard subdomains on your own domain",
   "type": "commonjs",
   "bin": {
@@ -21,10 +21,12 @@
     "url": "https://github.com/pyeom/uptool/issues"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "npm run typecheck && tsup",
     "dev": "tsup --watch",
-    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
@@ -37,6 +39,7 @@
     "@types/node": "^22.0.0",
     "@types/qrcode-terminal": "^0.12.2",
     "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^4.1.10",
     "tsup": "^8.3.0",
     "typescript": "^5.6.0",
     "vitest": "^4.1.9"

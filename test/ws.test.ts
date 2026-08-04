@@ -60,7 +60,7 @@ describe("WsManager", () => {
         // stray timer can't fire an uncaught ENOENT after cleanup.
         store.flushNow();
         server.close(() => {
-          fs.rmSync(tmpDir, { recursive: true });
+          fs.rmSync(tmpDir, { recursive: true, force: true });
           resolve();
         });
       })

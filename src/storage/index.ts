@@ -251,7 +251,11 @@ export class ManifestStore extends EventEmitter {
   // -------------------------------------------------------------------------
 
   private scheduleFlush(): void {
-    if (this.flushTimer) clearTimeout(this.flushTimer);
+    // Keep an already-pending timer rather than pushing it back: the flush
+    // writes the whole manifest, so a pending one already covers this change,
+    // and sustained traffic (recordHit per page view) would otherwise reset
+    // the deadline forever and never persist.
+    if (this.flushTimer) return;
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
       // This runs detached on a timer, so a throw here is an uncaught exception
@@ -692,7 +696,10 @@ export class ManifestStore extends EventEmitter {
 
     const entry = this.manifest[slug];
     const versionsDir = path.join(slugDir, ".versions");
-    const ts = Date.now().toString();
+    // Two updates within the same millisecond must not share a version id —
+    // that would collide on disk and duplicate the manifest entry.
+    const newest = Number(entry.versions?.[0] ?? 0);
+    const ts = String(Math.max(Date.now(), newest + 1));
     const versionDir = path.join(versionsDir, ts);
 
     fs.mkdirSync(versionDir, { recursive: true });

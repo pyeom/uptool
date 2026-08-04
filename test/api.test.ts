@@ -205,7 +205,7 @@ describe("API server", () => {
     } finally {
       limitedStore.flushNow();
       await new Promise<void>((resolve) => limitedServer.close(() => resolve()));
-      fs.rmSync(tmpDir2, { recursive: true });
+      fs.rmSync(tmpDir2, { recursive: true, force: true });
     }
   });
 
@@ -390,7 +390,12 @@ describe("API server", () => {
             let raw = "";
             res.on("data", (c) => (raw += c));
             res.on("end", () => {
-              expect(res.statusCode).toBe(200);
+              // Reject rather than throw here: a failed expect inside this
+              // callback would leave the Promise pending until the timeout.
+              if (res.statusCode !== 200) {
+                reject(new Error(`status ${res.statusCode}: ${raw}`));
+                return;
+              }
               resolve(JSON.parse(raw) as { slug: string });
             });
           }
@@ -409,7 +414,7 @@ describe("API server", () => {
     } finally {
       bigStore.flushNow();
       await new Promise<void>((resolve) => bigServer.close(() => resolve()));
-      fs.rmSync(tmpDir2, { recursive: true });
+      fs.rmSync(tmpDir2, { recursive: true, force: true });
     }
   });
 });

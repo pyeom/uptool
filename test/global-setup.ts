@@ -17,7 +17,7 @@ export function teardown(): void {
   const tmp = os.tmpdir();
   let removed = 0;
   for (const name of fs.readdirSync(tmp)) {
-    if (!/^uptool-[a-z-]+-/.test(name)) continue;
+    if (!/^uptool-[a-z0-9-]+-/.test(name)) continue;
     try {
       fs.rmSync(path.join(tmp, name), { recursive: true, force: true });
       removed++;

@@ -51,9 +51,14 @@ export class WsManager {
         return;
       }
 
+      // Key by the canonical slug: broadcasts come from the store's "updated"
+      // event, which always emits the canonical slug — a client that connected
+      // via a name would never be reached under the host-derived key.
+      const key = resolved ?? slug;
+
       this.wss.handleUpgrade(req, socket, head, (ws: TrackedSocket) => {
-        if (!this.clients.has(slug)) this.clients.set(slug, new Set());
-        const clientSet = this.clients.get(slug)!;
+        if (!this.clients.has(key)) this.clients.set(key, new Set());
+        const clientSet = this.clients.get(key)!;
         clientSet.add(ws);
 
         ws.isAlive = true;
@@ -63,7 +68,7 @@ export class WsManager {
 
         ws.on("close", () => {
           clientSet.delete(ws);
-          if (clientSet.size === 0) this.clients.delete(slug);
+          if (clientSet.size === 0) this.clients.delete(key);
         });
 
         ws.on("error", () => {

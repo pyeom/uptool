@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import { logPath } from "../config/index.js";
 import { readLogTail } from "./status.js";
 
@@ -41,11 +42,17 @@ export function logsCommand(opts: { follow?: boolean; lines?: string } = {}): vo
  */
 export function followLog(file: string, intervalMs = 1000): () => void {
   let offset = fs.statSync(file).size;
+  // Persistent decoder: a multi-byte character split across two reads would
+  // otherwise decode to U+FFFD on both sides.
+  let decoder = new StringDecoder("utf8");
 
   fs.watchFile(file, { interval: intervalMs }, (curr) => {
     // Truncated or rotated: the file we were reading is gone or reset, so
     // reading from the old offset would emit garbage. Restart from the top.
-    if (curr.size < offset) offset = 0;
+    if (curr.size < offset) {
+      offset = 0;
+      decoder = new StringDecoder("utf8");
+    }
     if (curr.size === offset) return;
 
     const fd = fs.openSync(file, "r");
@@ -54,7 +61,7 @@ export function followLog(file: string, intervalMs = 1000): () => void {
       const buf = Buffer.alloc(len);
       const read = fs.readSync(fd, buf, 0, len, offset);
       offset += read;
-      process.stdout.write(buf.subarray(0, read).toString("utf8"));
+      process.stdout.write(decoder.write(buf.subarray(0, read)));
     } finally {
       fs.closeSync(fd);
     }

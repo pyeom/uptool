@@ -191,6 +191,14 @@ export async function startDaemon(opts: StartDaemonOpts = {}): Promise<Daemon> {
   });
   liveDaemons.add(child);
 
+  // Drain both pipes: an unread pipe fills at ~64KB and blocks the daemon.
+  // Keep only the recent tail, for the startup-failure message.
+  const TAIL = 8 * 1024;
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (c: Buffer) => (out = (out + c).slice(-TAIL)));
+  child.stderr.on("data", (c: Buffer) => (err = (err + c).slice(-TAIL)));
+
   let stopped = false;
   const stop = async (): Promise<void> => {
     if (stopped) return;
@@ -219,9 +227,11 @@ export async function startDaemon(opts: StartDaemonOpts = {}): Promise<Daemon> {
   try {
     await waitForPort(apiPort);
     await waitForPort(pubPort);
-  } catch (err) {
+  } catch (e) {
     await stop();
-    throw err;
+    throw new Error(
+      `daemon failed to start: ${(e as Error).message}\n--- stdout ---\n${out}\n--- stderr ---\n${err}`
+    );
   }
 
   return { apiPort, pubPort, token, home, stop };

@@ -359,10 +359,15 @@ describe("cli.test.ts", () => {
 
     it("never leaks the access key of a protected deployment", async () => {
       const f = writeHtmlFile(scratch, "secret.html", "<h1>secret</h1>");
-      await runCli(["deploy", f, "--protect", "hunter2"], { home: daemon.home });
+      const deploy = await runCli(["deploy", f, "--protect", "hunter2"], { home: daemon.home });
+      expect(deploy.code).toBe(0);
+      const slug = new URL(deploy.stdout.match(/https?:\/\/\S+/)![0]).hostname.split(".")[0];
+
       const res = await runCli(["list", "--json"], { home: daemon.home });
       expect(res.stdout).not.toContain("hunter2");
-      expect(JSON.parse(res.stdout).some((e: { protected: boolean }) => e.protected)).toBe(true);
+      // Assert on this test's own entry — the daemon.home is shared.
+      const entry = JSON.parse(res.stdout).find((e: { slug: string }) => e.slug === slug);
+      expect(entry).toMatchObject({ slug, protected: true });
     }, 20_000);
   });
 

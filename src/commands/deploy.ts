@@ -195,10 +195,10 @@ export async function deployCommand(
         body
       );
       if (result.error) throw new Error(result.error);
-      const slug = result.slug ?? (opts.update as string);
-      // Prefer the name-based URL when a name was assigned (matches list.ts)
-      // — the deployment is reachable at name.<base_url>, not slug.<base_url>.
-      const urlSlug = !opts.update && opts.name ? opts.name : slug;
+      // Stable identifier: whatever the caller addressed the deployment by
+      // (--update value, or the name just assigned) — it stays valid across
+      // redeploys, unlike result.slug. Falls back to the random slug.
+      const urlSlug = opts.update ?? opts.name ?? (result.slug as string);
       const url = publicUrl(config, urlSlug);
       console.log(`✓ ${url}${expiry}`);
       if (key) console.log(`  key: ${key}  (Basic Auth password — any username)`);

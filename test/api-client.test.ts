@@ -23,7 +23,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  process.env.HOME = realHome;
+  // Assigning undefined would store the literal string "undefined".
+  if (realHome === undefined) delete process.env.HOME;
+  else process.env.HOME = realHome;
   fs.rmSync(tmpHome, { recursive: true, force: true });
 });
 

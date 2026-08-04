@@ -111,12 +111,27 @@ describe("readLogTail", () => {
     expect(cutOffset).toBeGreaterThan(0);
     expect(cutOffset).toBeLessThan(Buffer.byteLength(emoji));
 
+    // Asking for few enough lines to be satisfied by the first chunk: the
+    // chunk starts mid-emoji, so the partial first line holding the split
+    // character is discarded wholesale rather than decoded into U+FFFD.
+    const shortTail = readLogTail(p, 2);
+    expect(shortTail).not.toContain("�");
+    expect(shortTail).toBe(rest.trimEnd());
+
+    // Asking for more lines than the first chunk holds widens the window back
+    // to byte 0, so the emoji line comes back intact.
     const tail = readLogTail(p, 100);
-    // The chunk starts mid-emoji, so the partial first line holding the split
-    // character is discarded wholesale rather than decoded into U+FFFD...
     expect(tail).not.toContain("�");
-    // ...and the discard stops at that first newline: every later line is intact.
-    expect(tail).toBe(`${filler}\n${rest.trimEnd()}`);
+    expect(tail).toBe(`${emoji}\n${filler}\n${rest.trimEnd()}`);
+  });
+
+  it("returns the last line of a single-line file larger than 16KB", () => {
+    // One 17 KiB line with no newline before it: a single chunk read from the
+    // end contains no newline at all, and must not be discarded as partial.
+    const line = "z".repeat(17 * 1024);
+    const p = write("one-long-line.log", `${line}\n`);
+    expect(fs.statSync(p).size).toBeGreaterThan(CHUNK);
+    expect(readLogTail(p, 10)).toBe(line);
   });
 
   it("closes the file descriptor afterwards (no fd leak across many calls)", () => {
@@ -414,18 +429,33 @@ describe("followLog", () => {
   // fs.watchFile polls, so give it a couple of intervals to notice.
   const settle = (ms = 120) => new Promise((r) => setTimeout(r, ms));
 
+  // Poll until the watcher has emitted `text`, instead of betting on a fixed
+  // delay — stat polling latency varies by platform and filesystem.
+  //
+  // `poke` re-applies the file change on every iteration. fs.watchFile takes
+  // its baseline stat asynchronously, so a write landing between followLog()
+  // and that baseline is invisible to the watcher forever — under load that
+  // made these tests flaky. Repeating the (idempotent) write guarantees at
+  // least one change lands after the baseline.
+  async function waitFor(text: string, poke: () => void, timeoutMs = 10_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (out.join("").includes(text)) return;
+      poke();
+      await settle(20);
+    }
+    throw new Error(`timed out waiting for ${JSON.stringify(text)}; got: ${out.join("")}`);
+  }
+
   it("emits only newly appended bytes, not the existing content", async () => {
     const p = path.join(dir, "f.log");
     fs.writeFileSync(p, "already here\n");
     stop = followLog(p, 20);
 
-    fs.appendFileSync(p, "brand new\n");
-    await settle();
+    await waitFor("brand new", () => fs.appendFileSync(p, "brand new\n"));
 
-    const emitted = out.join("");
-    expect(emitted).toContain("brand new");
-    expect(emitted).not.toContain("already here");
-  });
+    expect(out.join("")).not.toContain("already here");
+  }, 25_000);
 
   it("resumes from the start when the file is truncated mid-follow", async () => {
     const p = path.join(dir, "rotate.log");
@@ -434,11 +464,8 @@ describe("followLog", () => {
 
     // Rotation: file shrinks. Reading from the stale (larger) offset would
     // emit garbage or nothing; it must restart from the new beginning.
-    fs.writeFileSync(p, "after rotation\n");
-    await settle();
-
-    expect(out.join("")).toContain("after rotation");
-  });
+    await waitFor("after rotation", () => fs.writeFileSync(p, "after rotation\n"));
+  }, 25_000);
 
   it("stop() releases the watcher", async () => {
     const p = path.join(dir, "s.log");

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import * as http from "node:http";
 import { startDaemon, runCli, tempHome, writeConfig, type Daemon } from "./helpers.js";
 
 /**
@@ -20,6 +21,31 @@ function writeHtmlFile(dir: string, name: string, content: string): string {
   const p = path.join(dir, name);
   fs.writeFileSync(p, content);
   return p;
+}
+
+/**
+ * Fetch what the public server actually serves for a slug. The daemon's
+ * base_url is whatever writeConfig() set, so the Host header has to match it
+ * for the subdomain routing to resolve.
+ */
+function fetchDeployed(daemon: Daemon, slug: string, baseUrl = "test.local"): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: "127.0.0.1",
+        port: daemon.pubPort,
+        path: "/",
+        headers: { host: `${slug}.${baseUrl}` },
+      },
+      (res) => {
+        let body = "";
+        res.on("data", (c) => (body += c));
+        res.on("end", () => resolve(body));
+      }
+    );
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 describe("cli.test.ts", () => {
@@ -165,6 +191,43 @@ describe("cli.test.ts", () => {
       } finally {
         fs.rmSync(binDir, { recursive: true, force: true });
       }
+    });
+
+    it("renders a .md file to HTML without being asked", async () => {
+      const f = path.join(scratch, "notes.md");
+      fs.writeFileSync(f, "# Title\n\n- one\n- two\n");
+      const res = await runCli(["deploy", f], { home: daemon.home });
+      expect(res.code).toBe(0);
+
+      const url = res.stdout.match(/https?:\/\/\S+/)![0];
+      const slug = new URL(url).hostname.split(".")[0];
+      const served = await fetchDeployed(daemon, slug);
+      expect(served).toContain("<h1>Title</h1>");
+      expect(served).toContain("<li>one</li>");
+      expect(served).toContain("<title>Title</title>");
+    });
+
+    it("--markdown renders stdin as Markdown", async () => {
+      const res = await runCli(["deploy", "--markdown"], {
+        home: daemon.home,
+        input: "# From stdin\n",
+      });
+      expect(res.code).toBe(0);
+
+      const url = res.stdout.match(/https?:\/\/\S+/)![0];
+      const slug = new URL(url).hostname.split(".")[0];
+      expect(await fetchDeployed(daemon, slug)).toContain("<h1>From stdin</h1>");
+    });
+
+    it("leaves .html files untouched", async () => {
+      const f = writeHtmlFile(scratch, "plain.html", "<h1>plain # not markdown</h1>");
+      const res = await runCli(["deploy", f], { home: daemon.home });
+      const url = res.stdout.match(/https?:\/\/\S+/)![0];
+      const slug = new URL(url).hostname.split(".")[0];
+
+      const served = await fetchDeployed(daemon, slug);
+      expect(served).toContain("<h1>plain # not markdown</h1>");
+      expect(served).not.toContain("<!DOCTYPE html>");
     });
 
     it("rejects --name with multiple files", async () => {

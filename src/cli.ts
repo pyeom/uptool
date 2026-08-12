@@ -64,6 +64,7 @@ program
   )
   .option("-t, --ttl <ttl>", "Expiry for this deployment (e.g. 2h, 7d, 0 = never)")
   .option("-o, --open", "Open the deployment in the default browser", false)
+  .option("--markdown", "Treat the input as Markdown (implied by .md/.markdown)", false)
   .action((files, opts) => deployCommand(files, opts));
 
 program

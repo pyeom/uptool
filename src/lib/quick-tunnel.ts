@@ -91,7 +91,10 @@ export function startQuickTunnel(
       reject(new Error(`could not run cloudflared: ${err.message}`));
     });
 
-    child.on("exit", (code, signal) => {
+    // "close", not "exit": exit can fire before the stdio pipes have drained,
+    // and the diagnostic below is built from exactly that output — reporting a
+    // startup failure with an empty reason is the worst time to lose it.
+    child.on("close", (code, signal) => {
       if (!settled) {
         settled = true;
         clearTimeout(timer);

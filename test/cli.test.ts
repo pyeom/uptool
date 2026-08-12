@@ -516,10 +516,16 @@ describe("cli.test.ts", () => {
   // --version / --help
   // ---------------------------------------------------------------------
   describe("--version / --help", () => {
-    it("--version prints 0.3.0", async () => {
+    it("--version prints the packaged version", async () => {
+      // Read it rather than hardcode it: a literal here just goes stale on
+      // every release and fails for the one reason that is never a bug.
+      const { version } = JSON.parse(
+        fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")
+      ) as { version: string };
+
       const res = await runCli(["--version"], { home: daemon.home });
       expect(res.code).toBe(0);
-      expect(res.stdout).toContain("0.3.0");
+      expect(res.stdout.trim()).toBe(version);
     });
 
     it("--help lists the commands and does not mention mcp or admin (deleted this cycle)", async () => {

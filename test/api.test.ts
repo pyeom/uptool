@@ -317,6 +317,75 @@ describe("API server", () => {
   });
 
   // -------------------------------------------------------------------------
+  // POST /prune
+  // -------------------------------------------------------------------------
+
+  describe("prune", () => {
+    /** Backdate a deployment so it looks stale without waiting for real time. */
+    function age(slug: string, opts: { expired?: boolean; lastSeen?: number; created?: number }) {
+      const entry = store.getEntry(slug)!;
+      if (opts.expired) entry.expires = Date.now() - 1000;
+      if (opts.lastSeen !== undefined) entry.last_seen = opts.lastSeen;
+      if (opts.created !== undefined) entry.created = opts.created;
+    }
+
+    const DAY = 24 * 60 * 60 * 1000;
+
+    it("removes expired deployments and leaves live ones alone", async () => {
+      const dead = store.store("<p>dead</p>", null, "index.html", "dead.html");
+      const alive = store.store("<p>alive</p>", null, "index.html", "alive.html");
+      age(dead, { expired: true });
+
+      const { status, data } = await apiRequest(server, "POST", "/prune", {});
+      expect(status).toBe(200);
+      const pruned = (data as { pruned: Array<{ slug: string; reason: string }> }).pruned;
+
+      expect(pruned.map((p) => p.slug)).toEqual([dead]);
+      expect(pruned[0].reason).toBe("expired");
+      expect(store.getEntry(dead)).toBeNull();
+      expect(store.getEntry(alive)).toBeTruthy();
+    });
+
+    it("dry_run reports without deleting", async () => {
+      const dead = store.store("<p>dead</p>", null, "index.html", "dead.html");
+      age(dead, { expired: true });
+
+      const { data } = await apiRequest(server, "POST", "/prune", { dry_run: true });
+      expect((data as { pruned: unknown[] }).pruned).toHaveLength(1);
+      expect(store.getEntry(dead)).toBeTruthy();
+    });
+
+    it("unseen catches deployments nobody has opened", async () => {
+      const stale = store.store("<p>stale</p>", null, "index.html", "stale.html");
+      const recent = store.store("<p>recent</p>", null, "index.html", "recent.html");
+      age(stale, { created: Date.now() - 40 * DAY });
+
+      const { data } = await apiRequest(server, "POST", "/prune", { unseen: "30d" });
+      const pruned = (data as { pruned: Array<{ slug: string; reason: string }> }).pruned;
+
+      expect(pruned.map((p) => p.slug)).toEqual([stale]);
+      expect(pruned[0].reason).toBe("never viewed");
+      expect(store.getEntry(recent)).toBeTruthy();
+    });
+
+    it("unseen measures from the last view, not creation", async () => {
+      const viewed = store.store("<p>v</p>", null, "index.html", "v.html");
+      // Created long ago but opened yesterday: still wanted.
+      age(viewed, { created: Date.now() - 90 * DAY, lastSeen: Date.now() - 1 * DAY });
+
+      const { data } = await apiRequest(server, "POST", "/prune", { unseen: "30d" });
+      expect((data as { pruned: unknown[] }).pruned).toHaveLength(0);
+      expect(store.getEntry(viewed)).toBeTruthy();
+    });
+
+    it("rejects a malformed unseen value", async () => {
+      const { status, data } = await apiRequest(server, "POST", "/prune", { unseen: "soon" });
+      expect(status).toBe(400);
+      expect((data as { error: string }).error).toMatch(/Invalid TTL/);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // POST /files/:slug/touch
   // -------------------------------------------------------------------------
 

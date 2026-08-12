@@ -253,6 +253,33 @@ describe("cli.test.ts", () => {
   // ---------------------------------------------------------------------
   // list
   // ---------------------------------------------------------------------
+  describe("prune", () => {
+    it("reports nothing to do on a healthy store", async () => {
+      const res = await runCli(["prune"], { home: daemon.home });
+      expect(res.code).toBe(0);
+      expect(res.stdout).toMatch(/Nothing expired/);
+    });
+
+    it("--dry-run leaves the deployment in place", async () => {
+      const f = writeHtmlFile(scratch, "prune.html", "<h1>prune</h1>");
+      const deployed = await runCli(["deploy", f, "--ttl", "0"], { home: daemon.home });
+      const slug = new URL(deployed.stdout.match(/https?:\/\/\S+/)![0]).hostname.split(".")[0];
+
+      // Nothing has viewed it, and --unseen 0m makes "never viewed" immediate.
+      const res = await runCli(["prune", "--unseen", "1m", "--dry-run"], { home: daemon.home });
+      expect(res.code).toBe(0);
+
+      const still = await runCli(["list", "--json"], { home: daemon.home });
+      expect(still.stdout).toContain(slug);
+    });
+
+    it("rejects a malformed --unseen", async () => {
+      const res = await runCli(["prune", "--unseen", "ages"], { home: daemon.home });
+      expect(res.code).toBe(1);
+      expect(res.stderr).toMatch(/Invalid TTL/);
+    });
+  });
+
   describe("list", () => {
     it("shows empty-state message when there are no deployments", async () => {
       const empty = await startDaemon();

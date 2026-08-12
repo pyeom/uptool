@@ -13,6 +13,7 @@ import { openCommand } from "./commands/open.js";
 import { rollbackCommand } from "./commands/rollback.js";
 import { logsCommand } from "./commands/logs.js";
 import { shareCommand } from "./commands/share.js";
+import { pruneCommand } from "./commands/prune.js";
 import {
   tunnelLoginCommand,
   tunnelSetupCommand,
@@ -93,6 +94,14 @@ program
   .description("List all deployed files")
   .option("--json", "Machine-readable output", false)
   .action((opts) => listCommand(opts));
+
+program
+  .command("prune")
+  .description("Remove expired deployments, and optionally ones nobody views")
+  .option("--unseen <ttl>", "Also remove deployments not viewed in this long (e.g. 30d)")
+  .option("--dry-run", "List what would be removed without removing it", false)
+  .option("--json", "Machine-readable output", false)
+  .action((opts) => pruneCommand(opts));
 
 program
   .command("rm <slug>")

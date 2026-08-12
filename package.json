@@ -1,6 +1,6 @@
 {
   "name": "uptool",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Serve LLM-generated HTML files via wildcard subdomains on your own domain",
   "type": "commonjs",
   "bin": {

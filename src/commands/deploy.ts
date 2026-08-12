@@ -100,8 +100,8 @@ export async function buildBody(
   return { html: source, filename };
 }
 
-/** Watch a file or directory and redeploy (in place, by slug) on change. */
-function watchAndRedeploy(
+/** Watch one file or directory and redeploy it (in place, by slug) on change. */
+function watchTarget(
   target: string,
   slug: string,
   key: string | undefined,
@@ -109,8 +109,6 @@ function watchAndRedeploy(
   ttl?: string,
   markdown = false
 ): void {
-  console.log(`\nWatching ${target} for changes... (Ctrl-C to stop)`);
-
   const redeploy = debounce(async () => {
     try {
       const body = await buildBody(target, markdown);
@@ -189,8 +187,8 @@ export async function deployCommand(
     process.exit(1);
   }
 
-  if (opts.watch && filePaths.length !== 1) {
-    console.error("--watch requires exactly one file or directory argument (no stdin).");
+  if (opts.watch && filePaths.length === 0) {
+    console.error("--watch requires at least one file or directory argument (no stdin).");
     process.exit(1);
   }
 
@@ -206,8 +204,7 @@ export async function deployCommand(
   const expiry = ttlMs > 0 ? `  (expires in ${ttl})` : "";
 
   let anyError = false;
-  let watchTarget: string | undefined;
-  let watchSlug: string | undefined;
+  const watched: Array<{ target: string; slug: string }> = [];
 
   for (const filePath of targets) {
     const body = await buildBody(filePath, opts.markdown);
@@ -234,10 +231,7 @@ export async function deployCommand(
       if (key) console.log(`  key: ${key}  (Basic Auth password — any username)`);
       if (opts.qr) qrcode.generate(url, { small: true });
       if (opts.open) openUrl(url);
-      if (opts.watch && filePath) {
-        watchTarget = filePath;
-        watchSlug = urlSlug;
-      }
+      if (opts.watch && filePath) watched.push({ target: filePath, slug: urlSlug });
     } catch (err) {
       console.error(`Error deploying ${filePath ?? "stdin"}: ${(err as Error).message}`);
       anyError = true;
@@ -246,7 +240,12 @@ export async function deployCommand(
 
   if (anyError) process.exit(1);
 
-  if (opts.watch && watchTarget && watchSlug) {
-    watchAndRedeploy(watchTarget, watchSlug, key, config, opts.ttl, opts.markdown);
+  if (watched.length > 0) {
+    for (const { target, slug } of watched) {
+      watchTarget(target, slug, key, config, opts.ttl, opts.markdown);
+    }
+    console.log(
+      `\nWatching ${watched.length} target(s) for changes... (Ctrl-C to stop)`
+    );
   }
 }

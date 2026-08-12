@@ -388,6 +388,17 @@ Files stored at `~/.uptool/files/<slug>.html`. Manifest at `~/.uptool/files/mani
 
 ---
 
+## Compression
+
+Text responses over 1 KB are compressed automatically: brotli when the browser
+accepts it, gzip otherwise. Already-compressed types (images, fonts) are left
+alone, and every response carries `Vary: Accept-Encoding` so caches can't hand
+a compressed body to a client that didn't ask for one.
+
+Nothing to configure. A typical LLM-generated page drops by 95%.
+
+---
+
 ## Security & threat model
 
 uptool serves files from **your** machine on **your** domain, reachable by anyone on the internet. Understand what that means before you point a domain at it.

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as http from "node:http";
+import * as zlib from "node:zlib";
 import { WebSocket } from "ws";
 import { ManifestStore, type Manifest } from "../src/storage/index.js";
 import { createPublicServer, RateLimiter } from "../src/server/public.js";
@@ -515,6 +516,91 @@ describe("Public server", () => {
   // -------------------------------------------------------------------------
   // Extensionless URL resolution / directory index
   // -------------------------------------------------------------------------
+
+  describe("compression", () => {
+    /** Like makeRequest, but keeps the body as bytes so it can be inflated. */
+    function rawRequest(
+      host: string,
+      acceptEncoding?: string,
+      urlPath = "/"
+    ): Promise<{ body: Buffer; headers: http.IncomingHttpHeaders }> {
+      return new Promise((resolve, reject) => {
+        const addr = server.address() as { port: number };
+        const headers: http.OutgoingHttpHeaders = { host };
+        if (acceptEncoding) headers["accept-encoding"] = acceptEncoding;
+        const req = http.request(
+          { hostname: "127.0.0.1", port: addr.port, path: urlPath, headers },
+          (res) => {
+            const chunks: Buffer[] = [];
+            res.on("data", (c: Buffer) => chunks.push(c));
+            res.on("end", () => resolve({ body: Buffer.concat(chunks), headers: res.headers }));
+          }
+        );
+        req.on("error", reject);
+        req.end();
+      });
+    }
+
+    /** Comfortably over the 1 KB floor, and highly compressible. */
+    const BIG_HTML = `<html><body>${"<p>hello world</p>".repeat(200)}</body></html>`;
+
+    it("brotli-compresses a large page when the client accepts br", async () => {
+      const slug = store.store(BIG_HTML, null, "index.html", "big.html");
+      const { body, headers } = await rawRequest(`${slug}.test.local`, "br, gzip");
+
+      expect(headers["content-encoding"]).toBe("br");
+      expect(body.length).toBeLessThan(BIG_HTML.length);
+      expect(zlib.brotliDecompressSync(body).toString()).toBe(BIG_HTML);
+      // Content-Length must describe the bytes actually sent, not the original.
+      expect(Number(headers["content-length"])).toBe(body.length);
+    });
+
+    it("falls back to gzip when br is not accepted", async () => {
+      const slug = store.store(BIG_HTML, null, "index.html", "big.html");
+      const { body, headers } = await rawRequest(`${slug}.test.local`, "gzip");
+
+      expect(headers["content-encoding"]).toBe("gzip");
+      expect(zlib.gunzipSync(body).toString()).toBe(BIG_HTML);
+    });
+
+    it("sends plain bytes when the client accepts nothing", async () => {
+      const slug = store.store(BIG_HTML, null, "index.html", "big.html");
+      const { body, headers } = await rawRequest(`${slug}.test.local`);
+
+      expect(headers["content-encoding"]).toBeUndefined();
+      expect(body.toString()).toBe(BIG_HTML);
+    });
+
+    it("leaves small responses alone", async () => {
+      const slug = store.store("<h1>tiny</h1>", null, "index.html", "t.html");
+      const { headers } = await rawRequest(`${slug}.test.local`, "br, gzip");
+      expect(headers["content-encoding"]).toBeUndefined();
+    });
+
+    it("does not recompress already-compressed types", async () => {
+      // A PNG large enough to clear the size floor; its bytes are incompressible
+      // in principle, but the point is that the type is never even considered.
+      const png = Buffer.alloc(4096, 7).toString("base64");
+      const slug = store.store(
+        null,
+        { "index.html": Buffer.from("<h1>x</h1>").toString("base64"), "a.png": png },
+        "index.html",
+        "bundle"
+      );
+      const { headers } = await rawRequest(`${slug}.test.local`, "br, gzip", "/a.png");
+
+      expect(headers["content-type"]).toBe("image/png");
+      expect(headers["content-encoding"]).toBeUndefined();
+    });
+
+    it("always announces Vary: Accept-Encoding", async () => {
+      const slug = store.store("<h1>tiny</h1>", null, "index.html", "t.html");
+      const { headers } = await rawRequest(`${slug}.test.local`, "br");
+      // Even uncompressed: a cache holding this must not serve it to a client
+      // that negotiated a different encoding.
+      expect(headers["vary"]).toBe("Accept-Encoding");
+    });
+  });
 
   describe("extensionless URL resolution", () => {
     it("serves about.html for /about", async () => {

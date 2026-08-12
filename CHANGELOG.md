@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`uptool deploy --ttl <ttl>`** sets the expiry for a single deployment
   instead of using the configured default. Works on update too, and `--watch`
   reapplies it on every redeploy.
+- **Automatic gzip/brotli compression** for text responses over 1 KB, with
+  `Vary: Accept-Encoding` on every response.
 - **`uptool deploy --open`** opens the deployment in the default browser,
   reusing the launcher `uptool open` already had.
 - **`uptool share <file>` — a public link with no domain and no account.**

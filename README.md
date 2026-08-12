@@ -254,6 +254,15 @@ uptool deploy report.html --protect mysecret   # or bring your own
 
 The browser prompts once (leave the username blank, paste the key as the password) and re-sends credentials for every asset in the bundle. Updating with `--update` keeps the existing key. Use HTTPS — Basic Auth over plain HTTP is readable in transit.
 
+### Open in the browser
+
+```bash
+uptool deploy dashboard.html --open
+```
+
+Hands the URL to your desktop's default browser. Combines with everything else;
+with several files it opens one tab per deployment.
+
 ### Per-deployment expiry
 
 Override the configured `ttl` for one deployment:

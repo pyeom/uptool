@@ -6,6 +6,7 @@ import { loadConfig, publicUrl, parseTtlMs, type Config } from "../config/index.
 import { callApi } from "../lib/api-client.js";
 import { validateBundlePath } from "../storage/index.js";
 import { debounce, formatTime } from "../lib/watch.js";
+import { openUrl } from "./open.js";
 
 function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -156,6 +157,7 @@ export async function deployCommand(
     qr?: boolean;
     watch?: boolean;
     ttl?: string;
+    open?: boolean;
   }
 ): Promise<void> {
   const config = loadConfig();
@@ -220,6 +222,7 @@ export async function deployCommand(
       console.log(`✓ ${url}${expiry}`);
       if (key) console.log(`  key: ${key}  (Basic Auth password — any username)`);
       if (opts.qr) qrcode.generate(url, { small: true });
+      if (opts.open) openUrl(url);
       if (opts.watch && filePath) {
         watchTarget = filePath;
         watchSlug = urlSlug;

@@ -133,6 +133,40 @@ describe("cli.test.ts", () => {
       expect(res.stderr).toMatch(/Invalid TTL/);
     });
 
+    it("--open hands the deployed URL to the desktop launcher", async () => {
+      // The launcher is resolved through PATH, so a fake one in front of it
+      // captures the call instead of opening a real browser on the test machine.
+      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "uptool-open-"));
+      const launcher =
+        process.platform === "darwin"
+          ? "open"
+          : process.platform === "win32"
+            ? "start"
+            : "xdg-open";
+      const captured = path.join(binDir, "opened.txt");
+      fs.writeFileSync(
+        path.join(binDir, launcher),
+        `#!/bin/sh\necho "$1" > ${JSON.stringify(captured)}\n`,
+        { mode: 0o755 }
+      );
+
+      try {
+        const f = writeHtmlFile(scratch, "open.html", "<h1>open</h1>");
+        const res = await runCli(["deploy", f, "--open"], {
+          home: daemon.home,
+          env: { PATH: `${binDir}:${process.env.PATH}` },
+        });
+        expect(res.code).toBe(0);
+
+        const url = res.stdout.match(/https?:\/\/\S+/)![0];
+        // The launcher is detached, so give it a moment to actually run.
+        await new Promise((r) => setTimeout(r, 500));
+        expect(fs.readFileSync(captured, "utf8").trim()).toBe(url);
+      } finally {
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    });
+
     it("rejects --name with multiple files", async () => {
       const f1 = writeHtmlFile(scratch, "rejn1.html", "<h1>1</h1>");
       const f2 = writeHtmlFile(scratch, "rejn2.html", "<h1>2</h1>");

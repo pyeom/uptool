@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import { pidPath, logPath, loadConfig, Config } from "../config/index.js";
 import { callApi } from "../lib/api-client.js";
+import { probeReady } from "../lib/tunnel-process.js";
 
 function readPid(): number | null {
   const pidFile = pidPath();
@@ -32,19 +33,28 @@ async function probeApi(config: Config): Promise<number | null> {
   }
 }
 
+function tryLoadConfig(): Config | null {
+  try {
+    return loadConfig();
+  } catch {
+    // not initialised — still report process state
+    return null;
+  }
+}
+
 export async function statusCommand(opts: { json?: boolean } = {}): Promise<void> {
   const pid = readPid();
   const running = pid !== null && isRunning(pid);
+  const config = tryLoadConfig();
+  const tunnel = config?.tunnel ?? "none";
+  // Only probe when a tunnel is actually configured: in local mode there is
+  // nothing to ask, and tunnel health must not affect anything.
+  const tunnelHealthy =
+    tunnel === "cloudflare" ? await probeReady(config!.tunnel_metrics_port) : null;
 
   if (opts.json) {
-    let config: Config | null = null;
-    try {
-      config = loadConfig();
-    } catch {
-      // not initialised — still report process state
-    }
     const deployments = running && config ? await probeApi(config) : null;
-    const healthy = running && deployments !== null;
+    const healthy = running && deployments !== null && tunnelHealthy !== false;
     console.log(
       JSON.stringify({
         running,
@@ -55,6 +65,9 @@ export async function statusCommand(opts: { json?: boolean } = {}): Promise<void
         base_url: config?.base_url ?? null,
         port: config?.port ?? null,
         api_port: config?.api_port ?? null,
+        tunnel,
+        tunnel_healthy: tunnelHealthy,
+        tunnel_url: config?.base_url ? `${config.scheme}://*.${config.base_url}` : null,
       })
     );
     // Non-zero exit when unhealthy so monitors can alert on it
@@ -76,6 +89,14 @@ export async function statusCommand(opts: { json?: boolean } = {}): Promise<void
     }
   } else {
     console.log(`uptool: running (pid ${pid})`);
+  }
+
+  if (tunnel === "cloudflare") {
+    console.log(
+      tunnelHealthy
+        ? `tunnel: cloudflare (connected)`
+        : `tunnel: cloudflare (down — no response on http://127.0.0.1:${config!.tunnel_metrics_port}/ready)`
+    );
   }
 
   const log = logPath();

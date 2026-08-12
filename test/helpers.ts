@@ -70,6 +70,11 @@ export interface ConfigOverrides {
   ttl?: string;
   storage_path?: string;
   token?: string;
+  tunnel?: string;
+  tunnel_metrics_port?: number;
+  cloudflared_path?: string;
+  /** Contents for ~/.uptool/cloudflared.yml. Omitted = no file, as if setup never ran. */
+  cloudflared_yml?: string;
 }
 
 /**
@@ -87,16 +92,28 @@ export function writeConfig(home: string, overrides: ConfigOverrides = {}): stri
   const storage_path = overrides.storage_path ?? path.join(uptoolDir, "files");
   const token = overrides.token ?? "test-token-" + Math.random().toString(36).slice(2);
 
-  const configToml = [
+  const lines = [
     `base_url = "${base_url}"`,
     `port = ${port}`,
     `api_port = ${api_port}`,
     `ttl = "${ttl}"`,
     `storage_path = ${JSON.stringify(storage_path)}`,
-  ].join("\n");
+  ];
+  if (overrides.tunnel !== undefined) lines.push(`tunnel = ${JSON.stringify(overrides.tunnel)}`);
+  if (overrides.tunnel_metrics_port !== undefined) {
+    lines.push(`tunnel_metrics_port = ${overrides.tunnel_metrics_port}`);
+  }
+  if (overrides.cloudflared_path !== undefined) {
+    lines.push(`cloudflared_path = ${JSON.stringify(overrides.cloudflared_path)}`);
+  }
+  const configToml = lines.join("\n");
   fs.writeFileSync(path.join(uptoolDir, "config.toml"), configToml);
   fs.writeFileSync(path.join(uptoolDir, "token"), token, { mode: 0o600 });
   fs.chmodSync(path.join(uptoolDir, "token"), 0o600);
+
+  if (overrides.cloudflared_yml !== undefined) {
+    fs.writeFileSync(path.join(uptoolDir, "cloudflared.yml"), overrides.cloudflared_yml);
+  }
 
   return token;
 }

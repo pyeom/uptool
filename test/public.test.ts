@@ -440,6 +440,57 @@ describe("Public server", () => {
       await new Promise<void>((r) => trustingServer.close(r));
     });
 
+    it("with trust_proxy ON, CF-Connecting-IP wins over X-Forwarded-For", async () => {
+      const trustingConfig = { ...TEST_CONFIG, rate_limit_rpm: 1, trust_proxy: true };
+      const trustingServer = createPublicServer(trustingConfig, store);
+      await new Promise<void>((r) => trustingServer.listen(0, "127.0.0.1", r));
+
+      const slug = store.store("<h1>hi</h1>", null, "index.html", "t.html");
+      // Same CF-Connecting-IP, different X-Forwarded-For: if XFF were winning
+      // these would land in two separate buckets and both return 200.
+      const d1 = await makeRequest(trustingServer, `${slug}.test.local`, "/", {
+        "CF-Connecting-IP": "8.8.8.8",
+        "X-Forwarded-For": "1.1.1.1",
+      });
+      const d2 = await makeRequest(trustingServer, `${slug}.test.local`, "/", {
+        "CF-Connecting-IP": "8.8.8.8",
+        "X-Forwarded-For": "2.2.2.2",
+      });
+      expect(d1.status).toBe(200);
+      expect(d2.status).toBe(429);
+
+      // A different CF-Connecting-IP still gets its own quota.
+      const e1 = await makeRequest(trustingServer, `${slug}.test.local`, "/", {
+        "CF-Connecting-IP": "8.8.4.4",
+        "X-Forwarded-For": "1.1.1.1",
+      });
+      expect(e1.status).toBe(200);
+
+      await new Promise<void>((r) => trustingServer.close(r));
+    });
+
+    it("with trust_proxy OFF, CF-Connecting-IP is ignored too", async () => {
+      const ignoringConfig = { ...TEST_CONFIG, rate_limit_rpm: 1, trust_proxy: false };
+      const ignoringServer = createPublicServer(ignoringConfig, store);
+      await new Promise<void>((r) => ignoringServer.listen(0, "127.0.0.1", r));
+
+      const slug = store.store("<h1>hi</h1>", null, "index.html", "t.html");
+      // Both requests share the real socket IP, so the spoofed headers must
+      // not buy a second quota.
+      const f1 = await makeRequest(ignoringServer, `${slug}.test.local`, "/", {
+        "CF-Connecting-IP": "8.8.8.8",
+        "X-Forwarded-For": "1.1.1.1",
+      });
+      const f2 = await makeRequest(ignoringServer, `${slug}.test.local`, "/", {
+        "CF-Connecting-IP": "8.8.4.4",
+        "X-Forwarded-For": "2.2.2.2",
+      });
+      expect(f1.status).toBe(200);
+      expect(f2.status).toBe(429);
+
+      await new Promise<void>((r) => ignoringServer.close(r));
+    });
+
     it("with trust_proxy OFF, X-Forwarded-For is ignored (socket address used)", async () => {
       const ignoringConfig = { ...TEST_CONFIG, rate_limit_rpm: 1, trust_proxy: false };
       const ignoringServer = createPublicServer(ignoringConfig, store);

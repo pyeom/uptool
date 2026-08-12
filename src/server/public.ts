@@ -50,9 +50,16 @@ export class RateLimiter {
   }
 }
 
-/** Resolve the client IP, honoring X-Forwarded-For only when proxy is trusted. */
+/** Resolve the client IP, honoring proxy headers only when proxy is trusted. */
 function clientIp(req: http.IncomingMessage, trustProxy: boolean): string {
   if (trustProxy) {
+    // CF-Connecting-IP first: Cloudflare rewrites it on every request with the
+    // real visitor IP, so unlike X-Forwarded-For a client can't append a fake
+    // entry to it. Fall back to XFF for non-Cloudflare proxies.
+    const cf = req.headers["cf-connecting-ip"];
+    const cfRaw = Array.isArray(cf) ? cf[0] : cf;
+    if (cfRaw) return cfRaw.split(",")[0].trim();
+
     const xff = req.headers["x-forwarded-for"];
     const raw = Array.isArray(xff) ? xff[0] : xff;
     if (raw) return raw.split(",")[0].trim();

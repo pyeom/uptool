@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan — Cloudflare Tunnel como modo opcional en uptool</title>
+<style>
+  :root {
+    --bg: #fbfaf9; --fg: #1c1917; --muted: #78716c; --line: #e7e5e4;
+    --card: #fff; --accent: #c2410c; --ok: #15803d; --warn: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1917; --fg: #f5f5f4; --muted: #a8a29e; --line: #44403c;
+      --card: #292524; --accent: #fb923c; --ok: #4ade80; --warn: #fbbf24;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 3rem 1.5rem; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+  main { max-width: 52rem; margin: 0 auto; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .5rem; letter-spacing: -.02em; }
+  h2 {
+    font-size: 1.25rem; margin: 3rem 0 1rem; padding-bottom: .5rem;
+    border-bottom: 1px solid var(--line); letter-spacing: -.01em;
+  }
+  h3 { font-size: 1rem; margin: 1.75rem 0 .5rem; }
+  .sub { color: var(--muted); margin: 0 0 2.5rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 1.25rem 1.5rem; margin: 1rem 0;
+  }
+  .card.pick { border-color: var(--accent); border-width: 2px; }
+  .tag {
+    display: inline-block; font-size: .7rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--accent); border: 1px solid currentColor;
+    border-radius: 99px; padding: .1rem .55rem; vertical-align: middle; margin-left: .5rem;
+  }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: .9rem; }
+  th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+  code {
+    font: .875em ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--line); padding: .1em .4em; border-radius: 4px;
+  }
+  pre {
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 1rem 1.25rem; overflow-x: auto; font-size: .85rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  ul, ol { padding-left: 1.25rem; }
+  li { margin: .35rem 0; }
+  .meta { display: flex; flex-wrap: wrap; gap: 1.5rem; font-size: .85rem; color: var(--muted); margin-bottom: 2.5rem; }
+  .out li { color: var(--muted); }
+  footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--line); font-size: .85rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+
+  <h1>Cloudflare Tunnel como modo opcional en uptool</h1>
+  <p class="sub">Exponer uptool sin IP estática ni port forwarding, dejando el modo local actual intacto y como default.</p>
+  <div class="meta">
+    <span><strong>Fecha</strong> 11 ago 2026</span>
+    <span><strong>Esfuerzo</strong> 4–6 días</span>
+    <span><strong>Enfoque</strong> Full managed sin API token</span>
+  </div>
+
+  <h2>Contexto</h2>
+  <p>
+    Hoy uptool exige tres cosas del usuario: un dominio propio, un registro DNS wildcard apuntando a la IP
+    pública de su máquina, y port forwarding en el router. Eso deja fuera a cualquiera detrás de CGNAT o con
+    IP dinámica, y obliga a exponer un puerto a internet. El README ya menciona Cloudflare Tunnel, pero solo
+    como nota al pie, sin ninguna integración.
+  </p>
+  <p>
+    El objetivo es convertirlo en un modo de exposición de primera clase, seleccionable con
+    <code>tunnel = "cloudflare"</code> en <code>config.toml</code>, que además trae HTTPS gratis — lo cual
+    corrige de paso la debilidad conocida de <code>--protect</code> (Basic Auth sobre HTTP plano viaja legible).
+    <strong>El modo local sigue siendo el default y no pierde ninguna capacidad:</strong> con
+    <code>tunnel = "none"</code> (valor por defecto) el daemon se comporta exactamente como hoy y no spawnea
+    ningún proceso extra.
+  </p>
+  <p>
+    La decisión de arquitectura que hace esto barato: uptool rutea por subdominio
+    (<code>x7k2mq.mydev.com</code>). Un <em>named tunnel</em> con ingress wildcard preserva ese modelo tal
+    cual, así que <code>public.ts</code>, <code>ws.ts</code> y todo el storage quedan sin tocar en su lógica
+    de routing.
+  </p>
+
+  <h2>Investigación</h2>
+  <table>
+    <thead><tr><th>Referencia</th><th>Stack</th><th>Escala</th><th>Qué tomamos</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><a href="https://github.com/unjs/untun">unjs/untun</a></td>
+        <td>TypeScript, wrapper de cloudflared, ~50 paquetes dependientes</td>
+        <td>Dev local, un puerto por tunnel</td>
+        <td>Confirma que spawnear cloudflared desde Node es un patrón resuelto. Pero apunta a <em>quick tunnels</em>: un solo hostname aleatorio, sin wildcard. No sirve para el routing por slug de uptool.</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/JacobLinCool/node-cloudflared">node-cloudflared</a> (npm <code>cloudflared</code>)</td>
+        <td>TypeScript; exporta <code>bin</code>, <code>install()</code>, <code>Tunnel</code>, <code>service</code></td>
+        <td>Base de untun y de varios plugins de dev server</td>
+        <td>Resuelve la descarga del binario por plataforma (macOS/Linux/Windows), <strong>lazy en el primer uso, no en postinstall</strong>. Tomamos <code>bin</code> e <code>install()</code>; descartamos su clase <code>Tunnel</code>, que solo cubre quick tunnels.</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/coollabsio/coolify/discussions/2926">Coolify</a> / <a href="https://github.com/Dokploy/dokploy/issues/2703">Dokploy</a></td>
+        <td>PHP/Node + Traefik + cloudflared</td>
+        <td>Miles de self-hosters</td>
+        <td>Ambos chocaron con exactamente nuestro caso: el wildcard funciona en el <code>ingress</code> del YAML, pero la ruta wildcard es rechazada en el panel de Tunnels. La lección: crear el DNS como CNAME <code>*</code> → <code>&lt;UUID&gt;.cfargotunnel.com</code> proxied, no como "public hostname" del tunnel.</td>
+      </tr>
+      <tr>
+        <td><a href="https://blog.cloudflare.com/wildcard-proxy-for-everyone/">Cloudflare — Wildcard proxy for everyone</a></td>
+        <td>Plataforma Cloudflare</td>
+        <td>Todos los planes desde 2022</td>
+        <td>Elimina el riesgo principal del enfoque: los registros wildcard <em>proxied</em> ya no son Enterprise-only. El plan Free alcanza.</td>
+      </tr>
+      <tr>
+        <td><a href="https://developers.cloudflare.com/tunnel/monitoring/">Docs de monitoring de cloudflared</a></td>
+        <td>Go, servidor Prometheus embebido</td>
+        <td>—</td>
+        <td>cloudflared expone un metrics server en <code>127.0.0.1:20241–20245</code> con endpoint <code>/ready</code>. Es el mecanismo de health para <code>uptool status</code>, en vez de parsear stderr.</td>
+      </tr>
+      <tr>
+        <td>ngrok</td>
+        <td>Agente Go + SDK en Go/Rust/Python/JS</td>
+        <td>Producto comercial</td>
+        <td>Modelo alternativo (SDK embebido en vez de binario externo). Descartado: dominios wildcard son de plan pago, y ata uptool a un servicio de terceros — contradice el "no cloud service, your machine, your domain" del README.</td>
+      </tr>
+      <tr>
+        <td>uptool (código actual)</td>
+        <td>TypeScript, 2756 líneas, deps: commander, ws, smol-toml, qrcode-terminal</td>
+        <td>Un usuario, un daemon</td>
+        <td><code>serve.ts</code> ya spawnea un hijo detached con stdio a log y maneja PID + shutdown. El ciclo de vida de cloudflared reusa ese patrón en vez de inventar uno.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Opciones evaluadas</h2>
+
+  <div class="card pick">
+    <h3>Full managed sin API token <span class="tag">Elegida</span></h3>
+    <p>
+      uptool gestiona el ciclo completo: consigue el binario vía la dependencia npm <code>cloudflared</code>,
+      crea el named tunnel con el <code>cert.pem</code> que genera <code>cloudflared tunnel login</code>,
+      escribe el YAML de ingress, intenta registrar el DNS wildcard y cae a instrucciones manuales si Cloudflare
+      lo rechaza, y corre cloudflared como proceso hijo supervisado del daemon.
+      Ningún API token de Cloudflare se guarda en disco: la única credencial es el <code>cert.pem</code> que
+      cloudflared ya maneja en <code>~/.cloudflared/</code>.
+    </p>
+    <table>
+      <tr><th>Stack</th><td>TypeScript, Node ≥18. Nueva dep: <code>cloudflared</code> (npm). Binario cloudflared del sistema si ya está en PATH. Sin SDK de Cloudflare.</td></tr>
+      <tr><th>Esfuerzo</th><td>4–6 días</td></tr>
+      <tr><th>Riesgos</th><td>El wildcard puede requerir un paso manual en el panel. La dep npm descarga un binario en tiempo de ejecución. Un cloudflared que crashea en loop no debe arrastrar al daemon.</td></tr>
+      <tr><th>Techo</th><td>Un tunnel, un origen, sin réplicas ni alta disponibilidad. Requiere que <code>base_url</code> sea el dominio apex (límite de Universal SSL). No cubre quick tunnels ni usuarios sin dominio.</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>Wrapper delgado</h3>
+    <p>
+      Idéntico en arquitectura, pero uptool no se hace cargo del binario: exige <code>cloudflared</code> en
+      PATH y falla con instrucciones de instalación si no está.
+    </p>
+    <table>
+      <tr><th>Stack</th><td>TypeScript, cero dependencias npm nuevas</td></tr>
+      <tr><th>Esfuerzo</th><td>1–2 días</td></tr>
+      <tr><th>Riesgos</th><td>Bajos. El onboarding depende de que el usuario instale bien el binario para su plataforma.</td></tr>
+      <tr><th>Techo</th><td>Un paso manual más antes del primer deploy, y soporte desparejo entre plataformas.</td></tr>
+    </table>
+    <p><strong>Descartada porque:</strong> se eligió priorizar el onboarding de un comando. Igualmente su núcleo queda absorbido: si hay un <code>cloudflared</code> en PATH, se usa ese y la descarga npm nunca ocurre — así que en la práctica esta opción es el camino rápido dentro de la elegida.</p>
+  </div>
+
+  <div class="card">
+    <h3>Solo config + docs</h3>
+    <p>
+      Sin spawn ni comandos nuevos. Solo las claves de config que el modo tunnel necesita
+      (<code>bind</code>, <code>scheme</code>, <code>trust_proxy</code>), soporte de <code>CF-Connecting-IP</code>,
+      y un <code>uptool tunnel print-config</code> que emite el YAML para que el usuario lo corra con su propio systemd.
+    </p>
+    <table>
+      <tr><th>Stack</th><td>TypeScript, sin dependencias nuevas</td></tr>
+      <tr><th>Esfuerzo</th><td>3–4 horas</td></tr>
+      <tr><th>Riesgos</th><td>Prácticamente ninguno</td></tr>
+      <tr><th>Techo</th><td>Sin ciclo de vida gestionado, sin health integrado en <code>status</code>, sin creación de tunnel. El usuario coordina dos servicios a mano.</td></tr>
+    </table>
+    <p><strong>Descartada porque:</strong> es la Fase 1 del plan elegido, no una alternativa. Se entrega igual, como primer paso independiente.</p>
+  </div>
+
+  <h2>Diseño</h2>
+
+  <h3>Claves de config nuevas</h3>
+<pre><code>tunnel = "none"              # "none" | "cloudflare" — default "none": comportamiento actual
+tunnel_name = "uptool"       # nombre del named tunnel
+tunnel_id = ""               # UUID, escrito por `uptool tunnel setup`
+tunnel_metrics_port = 20241  # metrics server de cloudflared, para /ready
+cloudflared_path = ""        # override; vacío = PATH, luego binario del paquete npm
+bind = "0.0.0.0"             # "127.0.0.1" cuando el tunnel está activo</code></pre>
+
+  <h3><code>~/.uptool/cloudflared.yml</code> generado</h3>
+<pre><code>tunnel: &lt;UUID&gt;
+credentials-file: ~/.cloudflared/&lt;UUID&gt;.json
+ingress:
+  - hostname: "*.mydev.com"
+    service: http://127.0.0.1:3000
+  - service: http_status:404</code></pre>
+
+  <h3>Superficie CLI</h3>
+<pre><code>uptool tunnel login    # passthrough a `cloudflared tunnel login` (genera cert.pem)
+uptool tunnel setup    # crea tunnel, escribe YAML, registra DNS, actualiza config.toml
+uptool tunnel status   # /ready del metrics server + `cloudflared tunnel list`
+uptool tunnel off      # vuelve a tunnel = "none" y restaura bind/scheme locales</code></pre>
+
+  <h2>Plan de implementación</h2>
+
+  <h3>Fase 1 — Base de config y proxy awareness</h3>
+  <p class="sub">Entregable independiente: útil incluso si el modo tunnel nunca se activa. Sin Cloudflare de por medio.</p>
+  <table>
+    <thead><tr><th>Tarea</th><th>Archivos</th><th>Depende de</th></tr></thead>
+    <tbody>
+      <tr><td>Agregar <code>bind</code>, <code>tunnel</code>, <code>tunnel_name</code>, <code>tunnel_id</code>, <code>tunnel_metrics_port</code>, <code>cloudflared_path</code> a <code>Config</code> y <code>DEFAULT_CONFIG</code></td><td><code>src/config/index.ts</code></td><td>—</td></tr>
+      <tr><td>Pasar el host de bind al listen del servidor público (hoy escucha en todas las interfaces sin host explícito)</td><td><code>src/commands/serve.ts</code></td><td>config</td></tr>
+      <tr><td><code>clientIp()</code> prioriza <code>CF-Connecting-IP</code> sobre <code>X-Forwarded-For</code> cuando <code>trust_proxy</code> está activo — Cloudflare siempre la setea y no es falsificable detrás del proxy</td><td><code>src/server/public.ts</code></td><td>—</td></tr>
+      <tr><td>Tests: defaults nuevos, precedencia de cabeceras de IP, bind restrictivo</td><td><code>test/config.test.ts</code>, <code>test/public.test.ts</code></td><td>las tres anteriores</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Listo cuando:</strong> <code>npm test</code> verde; un <code>uptool serve</code> con config existente (sin claves de tunnel) arranca y sirve idéntico a hoy; con <code>bind = "127.0.0.1"</code> el puerto público deja de responder desde otra máquina de la LAN.</p>
+
+  <h3>Fase 2 — Resolución del binario cloudflared</h3>
+  <p class="sub">uptool sabe encontrar, instalar y ejecutar cloudflared, sin todavía crear ningún tunnel.</p>
+  <table>
+    <thead><tr><th>Tarea</th><th>Archivos</th><th>Depende de</th></tr></thead>
+    <tbody>
+      <tr><td>Agregar la dependencia <code>cloudflared</code></td><td><code>package.json</code></td><td>—</td></tr>
+      <tr><td>Módulo nuevo: <code>binPath()</code> (PATH → <code>cloudflared_path</code> → <code>bin</code> del paquete), <code>ensureInstalled()</code> (llama a <code>install()</code> solo si falta), <code>version()</code>, y un <code>run(args)</code> que envuelve spawn con captura de stdout/stderr</td><td><code>src/lib/cloudflared.ts</code> (nuevo)</td><td>package.json</td></tr>
+      <tr><td>Tests con binario falso inyectado en PATH; ninguna descarga real en CI</td><td><code>test/cloudflared.test.ts</code> (nuevo)</td><td>lib</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Listo cuando:</strong> en una máquina con cloudflared ya en PATH (como la actual, <code>2026.7.3</code>), <code>binPath()</code> lo resuelve sin tocar la red ni descargar nada; en una sin él, <code>ensureInstalled()</code> lo baja una sola vez.</p>
+
+  <h3>Fase 3 — <code>uptool tunnel login</code> y <code>setup</code></h3>
+  <p class="sub">De cero a tunnel creado, YAML escrito y config coherente. Sin correrlo todavía.</p>
+  <table>
+    <thead><tr><th>Tarea</th><th>Archivos</th><th>Depende de</th></tr></thead>
+    <tbody>
+      <tr><td><code>login</code>: passthrough interactivo a <code>cloudflared tunnel login</code>; detecta un <code>cert.pem</code> existente y no repite el flujo</td><td><code>src/commands/tunnel.ts</code> (nuevo)</td><td>Fase 2</td></tr>
+      <tr><td><code>setup</code>: valida que <code>base_url</code> no esté vacío y advierte si no es el dominio apex (Universal SSL cubre un solo nivel de wildcard)</td><td><code>src/commands/tunnel.ts</code></td><td>login</td></tr>
+      <tr><td><code>setup</code>: crea el tunnel de forma idempotente — si ya existe, lee el UUID de <code>tunnel list --output json</code> en vez de fallar</td><td><code>src/commands/tunnel.ts</code></td><td>—</td></tr>
+      <tr><td><code>setup</code>: escribe <code>~/.uptool/cloudflared.yml</code> con el ingress wildcard y valida con <code>cloudflared tunnel ingress validate</code></td><td><code>src/commands/tunnel.ts</code></td><td>—</td></tr>
+      <tr><td><code>setup</code>: intenta <code>tunnel route dns</code> con el wildcard; si Cloudflare lo rechaza, imprime el CNAME exacto (<code>*</code> → <code>&lt;UUID&gt;.cfargotunnel.com</code>, proxied) para pegar en el panel</td><td><code>src/commands/tunnel.ts</code></td><td>—</td></tr>
+      <tr><td><code>setup</code>: persiste <code>tunnel="cloudflare"</code>, <code>tunnel_id</code>, <code>scheme="https"</code>, <code>trust_proxy=true</code>, <code>bind="127.0.0.1"</code>. <code>off</code> revierte</td><td><code>src/commands/tunnel.ts</code>, <code>src/config/index.ts</code></td><td>Fase 1</td></tr>
+      <tr><td>Registrar los subcomandos</td><td><code>src/cli.ts</code></td><td>tunnel.ts</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Listo cuando:</strong> en una máquina limpia, <code>login</code> + <code>setup</code> deja un YAML que pasa <code>ingress validate</code> y un <code>config.toml</code> coherente; correr <code>setup</code> dos veces seguidas no duplica tunnels ni registros; <code>tunnel off</code> devuelve la config al modo local funcionando.</p>
+
+  <h3>Fase 4 — Ciclo de vida dentro del daemon</h3>
+  <p class="sub">cloudflared vive y muere con <code>uptool serve</code>.</p>
+  <table>
+    <thead><tr><th>Tarea</th><th>Archivos</th><th>Depende de</th></tr></thead>
+    <tbody>
+      <tr><td>Supervisor: spawn de <code>tunnel --config &lt;yml&gt; --metrics 127.0.0.1:&lt;port&gt; run</code>, stdio al mismo fd de log que ya usa el daemon</td><td><code>src/lib/tunnel-process.ts</code> (nuevo)</td><td>Fases 2 y 3</td></tr>
+      <tr><td>Respawn con backoff exponencial (1s → 30s, con tope) y contador de reinicios; no respawnear cuando la salida vino de un shutdown intencional</td><td><code>src/lib/tunnel-process.ts</code></td><td>—</td></tr>
+      <tr><td>Enganchar en <code>serve.ts</code>: arrancar solo si <code>tunnel === "cloudflare"</code>; en <code>shutdown()</code> mandar SIGTERM y SIGKILL a los 5s si sigue vivo</td><td><code>src/commands/serve.ts</code></td><td>supervisor</td></tr>
+      <tr><td>Aislamiento de fallos: un cloudflared que crashea en loop se loguea claro pero el daemon sigue sirviendo en local; nunca tumba el proceso principal</td><td><code>src/commands/serve.ts</code></td><td>—</td></tr>
+      <tr><td>Verificar live-reload sobre WSS a través del tunnel (el script inyectado deriva <code>wss://</code> de <code>location.protocol</code>, así que con <code>scheme=https</code> debería salir solo)</td><td><code>src/server/public.ts</code>, <code>src/server/ws.ts</code></td><td>—</td></tr>
+      <tr><td>Tests con binario falso: spawn, respawn tras kill, cleanup en shutdown, y no-spawn con <code>tunnel="none"</code></td><td><code>test/tunnel.test.ts</code> (nuevo)</td><td>todo lo anterior</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Listo cuando:</strong> matar cloudflared a mano lo revive en menos de 5s; <code>uptool stop</code> no deja procesos huérfanos (<code>pgrep cloudflared</code> vacío); con <code>tunnel = "none"</code> no se spawnea absolutamente nada; y un deploy real es accesible por HTTPS en <code>&lt;slug&gt;.mydev.com</code> con live-reload funcionando.</p>
+
+  <h3>Fase 5 — Integración con status, init y documentación</h3>
+  <p class="sub">El modo tunnel se vuelve visible y descubrible.</p>
+  <table>
+    <thead><tr><th>Tarea</th><th>Archivos</th><th>Depende de</th></tr></thead>
+    <tbody>
+      <tr><td><code>status</code> y <code>status --json</code>: campos <code>tunnel</code>, <code>tunnel_healthy</code> (vía <code>/ready</code> del metrics server), <code>tunnel_url</code>. El <code>healthy</code> global pasa a exigir tunnel listo cuando el modo está activo</td><td><code>src/commands/status.ts</code></td><td>Fase 4</td></tr>
+      <tr><td><code>init</code>: preguntar "¿Exponer con Cloudflare Tunnel? (evita port forwarding)". Si sí, derivar a <code>uptool tunnel setup</code> en lugar de imprimir las instrucciones de DNS + router</td><td><code>src/commands/init.ts</code></td><td>Fase 3</td></tr>
+      <tr><td>Nota en la unit de systemd: el <code>cert.pem</code> debe existir para el usuario que corre el servicio. Estructura sin cambios — cloudflared es hijo del daemon</td><td><code>src/commands/install-service.ts</code></td><td>—</td></tr>
+      <tr><td>README: sección "Modos de exposición" con tabla local vs tunnel, dejando explícito que local sigue siendo el default. Actualizar la sección de seguridad (HTTPS ya no es un pendiente en modo tunnel) y el CHANGELOG</td><td><code>README.md</code>, <code>CHANGELOG.md</code></td><td>—</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Listo cuando:</strong> <code>uptool status --json</code> sale con código 1 si el tunnel está caído en modo cloudflare, y sigue saliendo 0 en modo local con el tunnel ausente; el README documenta los dos modos y cómo pasar de uno a otro.</p>
+
+  <h2>Fuera de alcance</h2>
+  <ul class="out">
+    <li>Quick tunnels (<code>trycloudflare.com</code>): no soportan wildcard, requieren routing por path. Feature separada.</li>
+    <li>Routing por path en general (<code>/&lt;slug&gt;/</code>) — toca <code>public.ts</code>, el script de live-reload y las URLs relativas de los bundles.</li>
+    <li>Cloudflare Access / validación de JWT como reemplazo de Basic Auth.</li>
+    <li>Creación del registro DNS vía API token de Cloudflare (decisión explícita: sin tokens en disco).</li>
+    <li>Tunnels remotos gestionados desde el dashboard (modelo token-based).</li>
+    <li>Múltiples tunnels, réplicas o alta disponibilidad.</li>
+    <li>Windows como plataforma verificada: el spawn y el kill se escriben portables, pero CI solo cubre Linux.</li>
+    <li>Migración automática de deployments existentes de <code>http://</code> a <code>https://</code> — las URLs ya entregadas cambian de esquema. Se documenta, no se automatiza.</li>
+    <li>Auto-detección de que el usuario ya tiene un cloudflared corriendo por su cuenta para el mismo dominio.</li>
+  </ul>
+
+  <h2>Riesgos abiertos</h2>
+  <ul>
+    <li><strong>El wildcard DNS puede ser rechazado por <code>route dns</code></strong> — es el riesgo mejor documentado (Coolify, Dokploy). Mitigación: ya está en el plan como fallback de primera clase, con el CNAME exacto impreso y verificación por resolución DNS antes de dar el setup por bueno.</li>
+    <li><strong>Universal SSL cubre un solo nivel de wildcard</strong> — si <code>base_url</code> es <code>apps.mydev.com</code>, los certificados no cubren <code>x7k2mq.apps.mydev.com</code>. Mitigación: validar en <code>setup</code> y advertir con la salida concreta (usar el apex, o Advanced Certificate Manager).</li>
+    <li><strong><code>cert.pem</code> es una credencial de alcance amplio sobre la zona</strong> — permite crear tunnels y registros DNS. uptool no lo copia, no lo mueve y no lo loguea; queda donde cloudflared lo pone. Documentarlo en la sección de seguridad del README.</li>
+    <li><strong>QUIC sobre UDP 7844 bloqueado en algunas redes</strong> — mitigación: exponer <code>--protocol http2</code> como opción de config cuando el tunnel no logra conectar.</li>
+    <li><strong>Descarga de binario en tiempo de ejecución</strong> — la dep npm baja cloudflared en el primer uso. Mitigación: preferir siempre el binario de PATH, y que la descarga sea un paso explícito y anunciado, nunca silencioso durante <code>serve</code>.</li>
+    <li><strong>Cobertura de tests en <code>src/commands/*</code></strong> — ya se sabe que marca 0% porque la ejecución real pasa por subprocesos. Los tests de tunnel van por <code>cli.test.ts</code> con un cloudflared falso en PATH, siguiendo el patrón existente del repo.</li>
+    <li><strong>Doble fuente de verdad en la config</strong> — <code>setup</code> reescribe <code>scheme</code>, <code>trust_proxy</code> y <code>bind</code>. Si el usuario los edita a mano después, el modo tunnel puede quedar incoherente. Mitigación: <code>tunnel status</code> detecta y reporta la incoherencia en vez de corregirla en silencio.</li>
+  </ul>
+
+  <footer>
+    Plan generado con <code>/postplan</code> · 11 ago 2026 · Pendiente de aprobación
+  </footer>
+
+</main>
+</body>
+</html>

@@ -48,4 +48,7 @@ WantedBy=default.target
   console.log(`  loginctl enable-linger ${os.userInfo().username}`);
   console.log(`\nNote: stop any manually started daemon first (uptool stop),`);
   console.log(`otherwise the service will fail to bind its ports.`);
+  console.log(`\nIn tunnel mode, cloudflared runs as a child of the daemon — no`);
+  console.log(`second unit to install. Make sure ~/.cloudflared/cert.pem is`);
+  console.log(`readable by the user the service runs as (${os.userInfo().username}).`);
 }

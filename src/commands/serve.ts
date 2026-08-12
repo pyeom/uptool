@@ -1,9 +1,19 @@
 import * as fs from "node:fs";
 import * as child_process from "node:child_process";
-import { loadConfig, configDir, pidPath, logPath, loadOrGenerateToken } from "../config/index.js";
+import {
+  loadConfig,
+  configDir,
+  pidPath,
+  logPath,
+  loadOrGenerateToken,
+  cloudflaredYmlPath,
+  Config,
+} from "../config/index.js";
 import { createApiServer } from "../server/api.js";
 import { createPublicServer } from "../server/public.js";
 import { WsManager } from "../server/ws.js";
+import { TunnelProcess } from "../lib/tunnel-process.js";
+import { findBinary } from "../lib/cloudflared.js";
 import { ManifestStore } from "../storage/index.js";
 
 export function serveCommand(opts: { foreground?: boolean }): void {
@@ -76,16 +86,25 @@ export function serveCommand(opts: { foreground?: boolean }): void {
     store.on("updated", (slug: string) => wsManager!.broadcast(slug, "reload"));
   }
 
+  const tunnel = config.tunnel === "cloudflare" ? startTunnel(config) : null;
+
   // Graceful shutdown
-  function shutdown(): void {
+  let shuttingDown = false;
+  async function shutdown(): Promise<void> {
+    // A second SIGTERM mid-shutdown must not re-run any of this.
+    if (shuttingDown) return;
+    shuttingDown = true;
     store.flushNow();
     wsManager?.close();
+    // Awaited, and before the pidfile goes away: `uptool stop` must not leave an
+    // orphan cloudflared behind pointing at a daemon that no longer exists.
+    await tunnel?.close();
     if (fs.existsSync(pidPath())) fs.unlinkSync(pidPath());
     process.exit(0);
   }
 
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown());
 
   // Last-resort guards. Request handlers already catch their own errors, so a
   // throw reaching here is unexpected — log it, persist state, but keep the
@@ -116,13 +135,35 @@ export function serveCommand(opts: { foreground?: boolean }): void {
   publicServer.on("error", onListenError("public server", config.port));
   apiServer.on("error", onListenError("API server", config.api_port));
 
-  publicServer.listen(config.port, () => {
-    console.log(`Public server listening on port ${config.port}`);
+  publicServer.listen(config.port, config.bind, () => {
+    console.log(`Public server listening on ${config.bind}:${config.port}`);
   });
 
   apiServer.listen(config.api_port, "127.0.0.1", () => {
     console.log(`API server listening on 127.0.0.1:${config.api_port}`);
   });
+}
+
+/**
+ * Every failure here is non-fatal on purpose: a missing binary or a broken
+ * tunnel must still leave the daemon serving over local HTTP.
+ */
+function startTunnel(config: Config): TunnelProcess | null {
+  const bin = findBinary(config.cloudflared_path);
+  const yml = cloudflaredYmlPath();
+  if (!bin) {
+    console.error(`[uptool] tunnel is on but cloudflared was not found — run: uptool tunnel setup`);
+  } else if (!fs.existsSync(yml)) {
+    console.error(`[uptool] tunnel is on but ${yml} is missing — run: uptool tunnel setup`);
+  } else {
+    try {
+      return new TunnelProcess(bin, yml, config.tunnel_metrics_port);
+    } catch (err) {
+      console.error(`[uptool] could not start cloudflared: ${(err as Error).message}`);
+    }
+  }
+  console.error(`[uptool] continuing without a tunnel — serving locally only.`);
+  return null;
 }
 
 function isRunning(pid: number): boolean {

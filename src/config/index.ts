@@ -40,10 +40,31 @@ export interface Config {
    * clients can spoof their IP. Default false.
    */
   trust_proxy: boolean;
+  /**
+   * Tunnel mode: "none" (default) or "cloudflare". "none" leaves uptool
+   * behaving exactly as it did before tunnels existed — nothing is spawned.
+   */
+  tunnel: string;
+  /** Name of the Cloudflare tunnel to create/reuse. Default "uptool". */
+  tunnel_name: string;
+  /** UUID of the created tunnel. Written by `uptool tunnel`; empty until then. */
+  tunnel_id: string;
+  /** Port cloudflared exposes its metrics endpoint on (health checks). */
+  tunnel_metrics_port: number;
+  /** Explicit path to the cloudflared binary. Empty = look it up in PATH. */
+  cloudflared_path: string;
+  /**
+   * Host the public server binds to. Default "0.0.0.0" (all interfaces).
+   * Set to "127.0.0.1" when a tunnel is the only intended way in.
+   */
+  bind: string;
 }
 
 export const DEFAULT_CONFIG: Config = {
-  base_url: "",
+  // Not necessarily a domain you own: it is the routing key the public server
+  // matches the Host header against. With `uptool share` the Host is rewritten
+  // by cloudflared, so this default works with no domain at all.
+  base_url: "uptool.local",
   port: 3000,
   api_port: 3001,
   ttl: "72h",
@@ -57,6 +78,12 @@ export const DEFAULT_CONFIG: Config = {
   max_versions: 5,
   rate_limit_rpm: 0,
   trust_proxy: false,
+  tunnel: "none",
+  tunnel_name: "uptool",
+  tunnel_id: "",
+  tunnel_metrics_port: 20241,
+  cloudflared_path: "",
+  bind: "0.0.0.0",
 };
 
 export function configDir(): string {
@@ -77,6 +104,10 @@ export function logPath(): string {
 
 export function tokenPath(): string {
   return path.join(configDir(), "token");
+}
+
+export function cloudflaredYmlPath(): string {
+  return path.join(configDir(), "cloudflared.yml");
 }
 
 export function loadOrGenerateToken(): string {

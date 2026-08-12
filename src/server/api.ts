@@ -206,6 +206,34 @@ async function handleApiRequest(
     }
 
     // ------------------------------------------------------------------
+    // POST /prune — reclaim expired and/or unviewed deployments
+    // ------------------------------------------------------------------
+    if (req.method === "POST" && url.pathname === "/prune") {
+      let bodyStr: string;
+      try {
+        bodyStr = await readBody(req, config.max_body_bytes);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "TOO_LARGE") {
+          json(res, 413, { error: "Request entity too large" });
+        } else {
+          json(res, 400, { error: String(err) });
+        }
+        return;
+      }
+      try {
+        const parsed = bodyStr
+          ? (JSON.parse(bodyStr) as { unseen?: string; dry_run?: boolean })
+          : {};
+        if (parsed.unseen !== undefined) parseTtlMs(parsed.unseen);
+        const pruned = store.prune({ unseen: parsed.unseen, dryRun: parsed.dry_run });
+        json(res, 200, { pruned });
+      } catch (err) {
+        json(res, 400, { error: (err as Error).message });
+      }
+      return;
+    }
+
+    // ------------------------------------------------------------------
     // DELETE /files/:slug — remove a deployment
     // ------------------------------------------------------------------
     if (req.method === "DELETE" && url.pathname.startsWith("/files/")) {

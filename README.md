@@ -326,6 +326,20 @@ uptool list --json
 
 Access keys of protected deployments are never included in either output.
 
+### Prune
+
+Reclaim space on demand. The daemon already sweeps expired deployments hourly;
+this also catches the pile nobody ever opened:
+
+```bash
+uptool prune                        # expired only
+uptool prune --unseen 30d           # plus anything not viewed in 30 days
+uptool prune --unseen 30d --dry-run # show what would go, delete nothing
+```
+
+`--unseen` measures from the last view, or from the deploy time for something
+never viewed at all. `--json` emits the list for scripts.
+
 ### Remove a deployment
 
 ```bash

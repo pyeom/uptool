@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **`uptool deploy --ttl <ttl>`** sets the expiry for a single deployment
+  instead of using the configured default. Works on update too, and `--watch`
+  reapplies it on every redeploy.
 - **`uptool share <file>` — a public link with no domain and no account.**
   Deploys the file and exposes it through a Cloudflare quick tunnel, printing a
   random `*.trycloudflare.com` URL over HTTPS. Ctrl-C ends the tunnel; the

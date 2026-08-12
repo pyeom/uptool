@@ -266,6 +266,57 @@ describe("API server", () => {
   });
 
   // -------------------------------------------------------------------------
+  // POST /deploy — per-deployment ttl
+  // -------------------------------------------------------------------------
+
+  it("deploy honours a per-deployment ttl instead of the config default", async () => {
+    const { status, data } = await apiRequest(server, "POST", "/deploy", {
+      html: "<p>short</p>",
+      filename: "short.html",
+      ttl: "30m",
+    });
+    expect(status).toBe(200);
+    const slug = (data as { slug: string }).slug;
+
+    const expires = store.getEntry(slug)!.expires;
+    const halfHour = 30 * 60 * 1000;
+    // Within a minute of half an hour out, and nowhere near the store's default.
+    expect(expires - Date.now()).toBeGreaterThan(halfHour - 60_000);
+    expect(expires - Date.now()).toBeLessThan(halfHour + 60_000);
+  });
+
+  it("deploy with ttl 0 never expires", async () => {
+    const { data } = await apiRequest(server, "POST", "/deploy", {
+      html: "<p>forever</p>",
+      filename: "f.html",
+      ttl: "0",
+    });
+    expect(store.getEntry((data as { slug: string }).slug)!.expires).toBe(0);
+  });
+
+  it("deploy rejects a malformed ttl before writing anything", async () => {
+    const { status, data } = await apiRequest(server, "POST", "/deploy", {
+      html: "<p>bad</p>",
+      filename: "b.html",
+      ttl: "2 weeks",
+    });
+    expect(status).toBe(400);
+    expect((data as { error: string }).error).toMatch(/Invalid TTL/);
+  });
+
+  it("update honours a new ttl", async () => {
+    const slug = store.store("<p>v1</p>", null, "index.html", "t.html");
+    const { status } = await apiRequest(server, "POST", "/deploy", {
+      html: "<p>v2</p>",
+      filename: "t.html",
+      slug,
+      ttl: "0",
+    });
+    expect(status).toBe(200);
+    expect(store.getEntry(slug)!.expires).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
   // POST /files/:slug/touch
   // -------------------------------------------------------------------------
 

@@ -62,6 +62,7 @@ program
     "Watch the file/directory and redeploy on change (single target only)",
     false
   )
+  .option("-t, --ttl <ttl>", "Expiry for this deployment (e.g. 2h, 7d, 0 = never)")
   .action((files, opts) => deployCommand(files, opts));
 
 program

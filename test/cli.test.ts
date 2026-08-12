@@ -112,6 +112,27 @@ describe("cli.test.ts", () => {
       expect(res.stdout.length).toBeGreaterThan(200);
     });
 
+    it("--ttl reports the per-deployment expiry, not the config one", async () => {
+      const f = writeHtmlFile(scratch, "ttl.html", "<h1>ttl</h1>");
+      const res = await runCli(["deploy", f, "--ttl", "2h"], { home: daemon.home });
+      expect(res.code).toBe(0);
+      expect(res.stdout).toMatch(/expires in 2h/);
+    });
+
+    it("--ttl 0 deploys without an expiry notice", async () => {
+      const f = writeHtmlFile(scratch, "forever.html", "<h1>forever</h1>");
+      const res = await runCli(["deploy", f, "--ttl", "0"], { home: daemon.home });
+      expect(res.code).toBe(0);
+      expect(res.stdout).not.toMatch(/expires in/);
+    });
+
+    it("rejects a malformed --ttl", async () => {
+      const f = writeHtmlFile(scratch, "badttl.html", "<h1>bad</h1>");
+      const res = await runCli(["deploy", f, "--ttl", "2 weeks"], { home: daemon.home });
+      expect(res.code).toBe(1);
+      expect(res.stderr).toMatch(/Invalid TTL/);
+    });
+
     it("rejects --name with multiple files", async () => {
       const f1 = writeHtmlFile(scratch, "rejn1.html", "<h1>1</h1>");
       const f2 = writeHtmlFile(scratch, "rejn2.html", "<h1>2</h1>");

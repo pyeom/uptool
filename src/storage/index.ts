@@ -321,7 +321,8 @@ export class ManifestStore extends EventEmitter {
     entry: string,
     filename: string,
     name?: string,
-    key?: string
+    key?: string,
+    ttl?: string
   ): string {
     if (name) {
       if (!isValidName(name)) {
@@ -345,7 +346,7 @@ export class ManifestStore extends EventEmitter {
 
     this._writeBundleFiles(slugDir, html, files, entry);
 
-    const ttlMs = parseTtlMs(this.ttl);
+    const ttlMs = parseTtlMs(ttl ?? this.ttl);
     const now = Date.now();
     this.manifest[slug] = {
       filename,
@@ -371,7 +372,8 @@ export class ManifestStore extends EventEmitter {
     files: Record<string, string> | null,
     entry: string,
     filename: string,
-    key?: string
+    key?: string,
+    ttl?: string
   ): string {
     const slug = this.resolveSlug(slugOrName);
     if (!slug) throw new Error(`Slug not found: ${slugOrName}`);
@@ -394,7 +396,7 @@ export class ManifestStore extends EventEmitter {
 
     this._writeBundleFiles(slugDir, html, files, entry);
 
-    const ttlMs = parseTtlMs(this.ttl);
+    const ttlMs = parseTtlMs(ttl ?? this.ttl);
     const now = Date.now();
     // key semantics: undefined = keep existing, "" = remove protection
     const newKey = key === undefined ? existing.key : key || undefined;

@@ -254,6 +254,18 @@ uptool deploy report.html --protect mysecret   # or bring your own
 
 The browser prompts once (leave the username blank, paste the key as the password) and re-sends credentials for every asset in the bundle. Updating with `--update` keeps the existing key. Use HTTPS — Basic Auth over plain HTTP is readable in transit.
 
+### Per-deployment expiry
+
+Override the configured `ttl` for one deployment:
+
+```bash
+uptool deploy draft.html --ttl 2h    # gone in two hours
+uptool deploy notes.html --ttl 0     # never expires
+```
+
+Accepts the same formats as the config (`30m`, `2h`, `7d`, `0`). With `--watch`,
+the TTL is reapplied on every redeploy instead of falling back to the default.
+
 ### Renew expiry
 
 Extend a deployment's TTL without redeploying:

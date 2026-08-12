@@ -1,7 +1,9 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { TunnelProcess } from "../src/lib/tunnel-process.js";
+import * as http from "node:http";
+import * as net from "node:net";
+import { TunnelProcess, tunnelHealthy } from "../src/lib/tunnel-process.js";
 import { freePort, startDaemon, tempHome, writeConfig } from "./helpers.js";
 
 /**
@@ -96,7 +98,7 @@ describe("TunnelProcess", () => {
   it("spawns with the global flags before the run subcommand", async () => {
     ctx = setup(FAKE_LONG);
     const metricsPort = await freePort();
-    supervisor = new TunnelProcess(ctx.bin, ctx.yml, metricsPort);
+    supervisor = await TunnelProcess.create(ctx.bin, ctx.yml, metricsPort);
 
     await waitFor(() => starts(ctx!.log).length === 1);
     expect(starts(ctx.log)[0]).toBe(
@@ -112,7 +114,7 @@ describe("TunnelProcess", () => {
       return true;
     });
 
-    supervisor = new TunnelProcess(ctx.bin, ctx.yml, await freePort());
+    supervisor = await TunnelProcess.create(ctx.bin, ctx.yml, await freePort());
     await waitFor(() => written.some((l) => l.includes("hello from the tunnel")));
 
     expect(written).toContain("[cloudflared] hello from the tunnel\n");
@@ -120,7 +122,7 @@ describe("TunnelProcess", () => {
 
   it("restarts a child that dies", async () => {
     ctx = setup(FAKE_CRASH);
-    supervisor = new TunnelProcess(ctx.bin, ctx.yml, await freePort());
+    supervisor = await TunnelProcess.create(ctx.bin, ctx.yml, await freePort());
 
     // Backoff is 1s then 2s, so a second start lands ~1s in.
     await waitFor(() => starts(ctx!.log).length >= 2, 4000);
@@ -128,7 +130,7 @@ describe("TunnelProcess", () => {
 
   it("never restarts after close()", async () => {
     ctx = setup(FAKE_CRASH);
-    supervisor = new TunnelProcess(ctx.bin, ctx.yml, await freePort());
+    supervisor = await TunnelProcess.create(ctx.bin, ctx.yml, await freePort());
 
     await waitFor(() => starts(ctx!.log).length >= 1);
     supervisor.close();
@@ -141,7 +143,7 @@ describe("TunnelProcess", () => {
 
   it("escalates to SIGKILL when the child ignores SIGTERM", async () => {
     ctx = setup(FAKE_DEAF);
-    const s = new TunnelProcess(ctx.bin, ctx.yml, await freePort());
+    const s = await TunnelProcess.create(ctx.bin, ctx.yml, await freePort());
     await waitFor(() => starts(ctx!.log).length >= 1);
 
     // close() resolving at all is the assertion: this child never honors
@@ -157,13 +159,91 @@ describe("TunnelProcess", () => {
 
   it("close() is idempotent and safe after the child is gone", async () => {
     ctx = setup(FAKE_CRASH);
-    const s = new TunnelProcess(ctx.bin, ctx.yml, await freePort());
+    const s = await TunnelProcess.create(ctx.bin, ctx.yml, await freePort());
     await waitFor(() => starts(ctx!.log).length >= 1);
     await sleep(100);
     expect(() => {
       s.close();
       s.close();
     }).not.toThrow();
+  });
+});
+
+describe("tunnelHealthy ownership", () => {
+  /**
+   * Stand in for an unrelated cloudflared: something that answers 200 on
+   * /ready, exactly like the real one, but that uptool did not start.
+   */
+  function fakeMetricsServer(): Promise<{ port: number; close: () => Promise<void> }> {
+    return new Promise((resolve) => {
+      const srv = http.createServer((req, res) => {
+        res.writeHead(req.url === "/ready" ? 200 : 404);
+        res.end('{"status":200,"readyConnections":3}');
+      });
+      srv.listen(0, "127.0.0.1", () => {
+        resolve({
+          port: (srv.address() as net.AddressInfo).port,
+          close: () => new Promise<void>((r) => srv.close(() => r())),
+        });
+      });
+    });
+  }
+
+  let home: { home: string; cleanup: () => void } | undefined;
+  const realHome = process.env.HOME;
+
+  afterEach(() => {
+    home?.cleanup();
+    home = undefined;
+    // Restore rather than delete: os.homedir() reads HOME, and unsetting it
+    // would follow this worker into whatever runs next.
+    process.env.HOME = realHome;
+  });
+
+  it("is false when no tunnel state was recorded", async () => {
+    home = tempHome();
+    process.env.HOME = home.home;
+    expect(await tunnelHealthy()).toBe(false);
+  });
+
+  it("does not claim a stranger's cloudflared as ours", async () => {
+    home = tempHome();
+    process.env.HOME = home.home;
+    const foreign = await fakeMetricsServer();
+
+    try {
+      // The exact shape of the bug: a live metrics server on the recorded port,
+      // but the process uptool started is long gone. PID 1 is init, which is
+      // alive but is certainly not our cloudflared — so use a PID that cannot
+      // be running instead.
+      const deadPid = 2 ** 22; // above /proc/sys/kernel/pid_max on Linux
+      fs.writeFileSync(
+        path.join(home.home, ".uptool", "tunnel.json"),
+        JSON.stringify({ pid: deadPid, metrics_port: foreign.port })
+      );
+
+      expect(await tunnelHealthy()).toBe(false);
+    } finally {
+      await foreign.close();
+    }
+  });
+
+  it("is true when our own process is alive and the port answers", async () => {
+    home = tempHome();
+    process.env.HOME = home.home;
+    const mine = await fakeMetricsServer();
+
+    try {
+      // process.pid is alive by definition, standing in for a live child.
+      fs.writeFileSync(
+        path.join(home.home, ".uptool", "tunnel.json"),
+        JSON.stringify({ pid: process.pid, metrics_port: mine.port })
+      );
+
+      expect(await tunnelHealthy()).toBe(true);
+    } finally {
+      await mine.close();
+    }
   });
 });
 

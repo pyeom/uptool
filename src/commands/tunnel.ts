@@ -12,7 +12,7 @@ import {
   Config,
 } from "../config/index.js";
 import { ensureBinary, findBinary, run, version } from "../lib/cloudflared.js";
-import { probeReady } from "../lib/tunnel-process.js";
+import { readTunnelState, tunnelHealthy } from "../lib/tunnel-process.js";
 
 /** Where `cloudflared tunnel login` drops the account certificate. */
 function certPath(): string {
@@ -150,11 +150,14 @@ export async function tunnelStatusCommand(): Promise<void> {
   console.log(`config:    ${fs.existsSync(yml) ? yml : "missing — run: uptool tunnel setup"}`);
   console.log(`tunnel_id: ${config.tunnel_id || "(unset)"}`);
 
-  const ready = await probeReady(config.tunnel_metrics_port);
+  const state = readTunnelState();
+  const ready = await tunnelHealthy();
   console.log(
     ready
-      ? `health:    connected (metrics on :${config.tunnel_metrics_port})`
-      : `health:    not running — no response on http://127.0.0.1:${config.tunnel_metrics_port}/ready`
+      ? `health:    connected (pid ${state!.pid}, metrics on :${state!.metrics_port})`
+      : state
+        ? `health:    not connected (cloudflared pid ${state.pid} is gone or has no live connections)`
+        : `health:    not running — the daemon has no cloudflared of its own`
   );
 
   const problems: string[] = [];

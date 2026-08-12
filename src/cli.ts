@@ -44,7 +44,12 @@ program
   .command("serve")
   .description("Start the uptool daemon")
   .option("--foreground", "Run in foreground instead of daemonizing", false)
-  .action((opts) => serveCommand(opts));
+  .action((opts) =>
+    serveCommand(opts).catch((err: Error) => {
+      console.error(err.message);
+      process.exit(1);
+    })
+  );
 
 program
   .command("deploy [files...]")

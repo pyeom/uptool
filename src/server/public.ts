@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as https from "node:https";
+import * as zlib from "node:zlib";
 import { Config } from "../config/index.js";
 import { ManifestStore } from "../storage/index.js";
 import { extractSlug } from "../lib/slug.js";
@@ -50,14 +51,70 @@ export class RateLimiter {
   }
 }
 
-/** Resolve the client IP, honoring X-Forwarded-For only when proxy is trusted. */
+/** Resolve the client IP, honoring proxy headers only when proxy is trusted. */
 function clientIp(req: http.IncomingMessage, trustProxy: boolean): string {
   if (trustProxy) {
+    // CF-Connecting-IP first: Cloudflare rewrites it on every request with the
+    // real visitor IP, so unlike X-Forwarded-For a client can't append a fake
+    // entry to it. Fall back to XFF for non-Cloudflare proxies.
+    const cf = req.headers["cf-connecting-ip"];
+    const cfRaw = Array.isArray(cf) ? cf[0] : cf;
+    if (cfRaw) return cfRaw.split(",")[0].trim();
+
     const xff = req.headers["x-forwarded-for"];
     const raw = Array.isArray(xff) ? xff[0] : xff;
     if (raw) return raw.split(",")[0].trim();
   }
   return req.socket.remoteAddress ?? "unknown";
+}
+
+/**
+ * Below this, compression costs more bytes (and CPU) than it saves once the
+ * Content-Encoding header and the framing are accounted for.
+ */
+const COMPRESS_MIN_BYTES = 1024;
+
+/** Types worth compressing. Everything else is already compressed (png, woff2, …). */
+function isCompressible(contentType: string): boolean {
+  const type = contentType.split(";")[0].trim();
+  return (
+    type.startsWith("text/") ||
+    type === "application/json" ||
+    type === "application/javascript" ||
+    type === "application/xml" ||
+    type === "image/svg+xml"
+  );
+}
+
+/**
+ * Compress `body` with the best encoding the client accepts, or return null to
+ * send it as-is.
+ *
+ * Brotli beats gzip on text but its default quality (11) is far too slow to run
+ * per request; 5 gives most of the win for a fraction of the cost. Compression
+ * is synchronous, which is fine for the sizes uptool serves — deployments are
+ * capped at max_file_size (5 MB by default) and text that large is rare.
+ */
+function compress(
+  body: Buffer,
+  contentType: string,
+  acceptEncoding: string | undefined
+): { body: Buffer; encoding: string } | null {
+  if (body.length < COMPRESS_MIN_BYTES || !isCompressible(contentType)) return null;
+
+  const accepted = (acceptEncoding ?? "").toLowerCase();
+  if (accepted.includes("br")) {
+    return {
+      body: zlib.brotliCompressSync(body, {
+        params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 },
+      }),
+      encoding: "br",
+    };
+  }
+  if (accepted.includes("gzip")) {
+    return { body: zlib.gzipSync(body), encoding: "gzip" };
+  }
+  return null;
 }
 
 function applySecurityHeaders(
@@ -157,6 +214,15 @@ function handleRequest(
     }
     body = Buffer.from(html, "utf8");
   }
+
+  const compressed = compress(body, result.contentType, req.headers["accept-encoding"]);
+  if (compressed) {
+    body = compressed.body;
+    headers["Content-Encoding"] = compressed.encoding;
+  }
+  // Always announced, even uncompressed: a cache that stored this response must
+  // not hand it to a client that negotiated a different encoding.
+  headers["Vary"] = "Accept-Encoding";
 
   headers["Content-Length"] = body.length;
   res.writeHead(200, headers);

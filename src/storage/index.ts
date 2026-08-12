@@ -321,7 +321,8 @@ export class ManifestStore extends EventEmitter {
     entry: string,
     filename: string,
     name?: string,
-    key?: string
+    key?: string,
+    ttl?: string
   ): string {
     if (name) {
       if (!isValidName(name)) {
@@ -345,7 +346,7 @@ export class ManifestStore extends EventEmitter {
 
     this._writeBundleFiles(slugDir, html, files, entry);
 
-    const ttlMs = parseTtlMs(this.ttl);
+    const ttlMs = parseTtlMs(ttl ?? this.ttl);
     const now = Date.now();
     this.manifest[slug] = {
       filename,
@@ -371,7 +372,8 @@ export class ManifestStore extends EventEmitter {
     files: Record<string, string> | null,
     entry: string,
     filename: string,
-    key?: string
+    key?: string,
+    ttl?: string
   ): string {
     const slug = this.resolveSlug(slugOrName);
     if (!slug) throw new Error(`Slug not found: ${slugOrName}`);
@@ -394,7 +396,7 @@ export class ManifestStore extends EventEmitter {
 
     this._writeBundleFiles(slugDir, html, files, entry);
 
-    const ttlMs = parseTtlMs(this.ttl);
+    const ttlMs = parseTtlMs(ttl ?? this.ttl);
     const now = Date.now();
     // key semantics: undefined = keep existing, "" = remove protection
     const newKey = key === undefined ? existing.key : key || undefined;
@@ -578,6 +580,48 @@ export class ManifestStore extends EventEmitter {
   // -------------------------------------------------------------------------
   // Expiry sweep
   // -------------------------------------------------------------------------
+
+  /**
+   * Find — and optionally remove — deployments worth reclaiming.
+   *
+   * Always includes anything already expired. `unseen` additionally selects
+   * deployments that nobody has looked at for that long, measured from the last
+   * view or, for a deployment never viewed at all, from when it was created.
+   *
+   * `dryRun` reports the same list without touching anything, so the caller can
+   * show it before deleting.
+   */
+  prune(opts: { unseen?: string; dryRun?: boolean } = {}): Array<{
+    slug: string;
+    filename: string;
+    reason: string;
+  }> {
+    const now = Date.now();
+    const unseenMs = opts.unseen ? parseTtlMs(opts.unseen) : 0;
+    const doomed: Array<{ slug: string; filename: string; reason: string }> = [];
+
+    for (const [slug, entry] of Object.entries(this.manifest)) {
+      if (entry.expires > 0 && now > entry.expires) {
+        doomed.push({ slug, filename: entry.filename, reason: "expired" });
+        continue;
+      }
+      if (unseenMs > 0) {
+        const lastActivity = entry.last_seen ?? entry.created;
+        if (now - lastActivity > unseenMs) {
+          doomed.push({
+            slug,
+            filename: entry.filename,
+            reason: entry.last_seen ? `not viewed in ${opts.unseen}` : "never viewed",
+          });
+        }
+      }
+    }
+
+    if (!opts.dryRun) {
+      for (const { slug } of doomed) this.remove(slug);
+    }
+    return doomed;
+  }
 
   /** Remove all expired deployments. Returns count removed. */
   cleanExpired(): number {

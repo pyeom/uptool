@@ -6,6 +6,8 @@ import { loadConfig, publicUrl, parseTtlMs, type Config } from "../config/index.
 import { callApi } from "../lib/api-client.js";
 import { validateBundlePath } from "../storage/index.js";
 import { debounce, formatTime } from "../lib/watch.js";
+import { openUrl } from "./open.js";
+import { isMarkdownPath, renderMarkdown } from "../lib/markdown.js";
 
 function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -34,15 +36,19 @@ export function walkDir(dir: string, baseDir: string): Array<{ rel: string; full
 }
 
 export async function buildBody(
-  filePath: string | undefined
+  filePath: string | undefined,
+  forceMarkdown = false
 ): Promise<Record<string, unknown>> {
   if (!filePath) {
-    const html = await readStdin();
-    if (!html.trim()) {
+    const input = await readStdin();
+    if (!input.trim()) {
       console.error("No content provided.");
       process.exit(1);
     }
-    return { html, filename: "stdin.html" };
+    if (forceMarkdown) {
+      return { html: renderMarkdown(input, "stdin"), filename: "stdin.md" };
+    }
+    return { html: input, filename: "stdin.html" };
   }
 
   if (!fs.existsSync(filePath)) {
@@ -86,24 +92,31 @@ export async function buildBody(
     return { files, entry, filename: path.basename(path.resolve(filePath)) };
   }
 
-  const html = fs.readFileSync(filePath, "utf8");
-  return { html, filename: path.basename(filePath) };
+  const filename = path.basename(filePath);
+  const source = fs.readFileSync(filePath, "utf8");
+  if (forceMarkdown || isMarkdownPath(filePath)) {
+    return { html: renderMarkdown(source, filename), filename };
+  }
+  return { html: source, filename };
 }
 
-/** Watch a file or directory and redeploy (in place, by slug) on change. */
-function watchAndRedeploy(
+/** Watch one file or directory and redeploy it (in place, by slug) on change. */
+function watchTarget(
   target: string,
   slug: string,
   key: string | undefined,
-  config: Config
+  config: Config,
+  ttl?: string,
+  markdown = false
 ): void {
-  console.log(`\nWatching ${target} for changes... (Ctrl-C to stop)`);
-
   const redeploy = debounce(async () => {
     try {
-      const body = await buildBody(target);
+      const body = await buildBody(target, markdown);
       body.slug = slug;
       if (key) body.key = key;
+      // Without this every redeploy would silently reset the expiry to the
+      // config default, quietly undoing an explicit --ttl.
+      if (ttl !== undefined) body.ttl = ttl;
       const result = await callApi<{ slug?: string; error?: string }>(
         config.api_port,
         "POST",
@@ -151,9 +164,22 @@ export async function deployCommand(
     protect?: string | boolean;
     qr?: boolean;
     watch?: boolean;
+    ttl?: string;
+    open?: boolean;
+    markdown?: boolean;
   }
 ): Promise<void> {
   const config = loadConfig();
+
+  // Validate locally for a fast, clear error before writing anything.
+  if (opts.ttl !== undefined) {
+    try {
+      parseTtlMs(opts.ttl);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  }
 
   const multi = filePaths.length > 1;
   if (multi && (opts.update || opts.name)) {
@@ -161,8 +187,8 @@ export async function deployCommand(
     process.exit(1);
   }
 
-  if (opts.watch && filePaths.length !== 1) {
-    console.error("--watch requires exactly one file or directory argument (no stdin).");
+  if (opts.watch && filePaths.length === 0) {
+    console.error("--watch requires at least one file or directory argument (no stdin).");
     process.exit(1);
   }
 
@@ -173,19 +199,20 @@ export async function deployCommand(
       : opts.protect || undefined;
 
   const targets = filePaths.length === 0 ? [undefined] : filePaths;
-  const ttlMs = parseTtlMs(config.ttl);
-  const expiry = ttlMs > 0 ? `  (expires in ${config.ttl})` : "";
+  const ttl = opts.ttl ?? config.ttl;
+  const ttlMs = parseTtlMs(ttl);
+  const expiry = ttlMs > 0 ? `  (expires in ${ttl})` : "";
 
   let anyError = false;
-  let watchTarget: string | undefined;
-  let watchSlug: string | undefined;
+  const watched: Array<{ target: string; slug: string }> = [];
 
   for (const filePath of targets) {
-    const body = await buildBody(filePath);
+    const body = await buildBody(filePath, opts.markdown);
 
     if (!opts.update && opts.name) body.name = opts.name;
     if (opts.update) body.slug = opts.update;
     if (key) body.key = key;
+    if (opts.ttl !== undefined) body.ttl = opts.ttl;
 
     try {
       const result = await callApi<{ slug?: string; error?: string }>(
@@ -203,10 +230,8 @@ export async function deployCommand(
       console.log(`✓ ${url}${expiry}`);
       if (key) console.log(`  key: ${key}  (Basic Auth password — any username)`);
       if (opts.qr) qrcode.generate(url, { small: true });
-      if (opts.watch && filePath) {
-        watchTarget = filePath;
-        watchSlug = urlSlug;
-      }
+      if (opts.open) openUrl(url);
+      if (opts.watch && filePath) watched.push({ target: filePath, slug: urlSlug });
     } catch (err) {
       console.error(`Error deploying ${filePath ?? "stdin"}: ${(err as Error).message}`);
       anyError = true;
@@ -215,7 +240,12 @@ export async function deployCommand(
 
   if (anyError) process.exit(1);
 
-  if (opts.watch && watchTarget && watchSlug) {
-    watchAndRedeploy(watchTarget, watchSlug, key, config);
+  if (watched.length > 0) {
+    for (const { target, slug } of watched) {
+      watchTarget(target, slug, key, config, opts.ttl, opts.markdown);
+    }
+    console.log(
+      `\nWatching ${watched.length} target(s) for changes... (Ctrl-C to stop)`
+    );
   }
 }

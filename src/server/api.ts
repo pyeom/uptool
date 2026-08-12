@@ -1,6 +1,6 @@
 import * as http from "node:http";
 import * as crypto from "node:crypto";
-import { Config } from "../config/index.js";
+import { Config, parseTtlMs } from "../config/index.js";
 import { ManifestStore, stripMarkdownFences, isValidName } from "../storage/index.js";
 
 const DEFAULT_ENTRY = "index.html";
@@ -137,12 +137,25 @@ async function handleApiRequest(
           /** Access key — public server requires Basic Auth when set.
            *  On update: undefined keeps the existing key, "" removes it. */
           key?: string;
+          /** Per-deployment TTL ("2h", "7d", "0" = never). Omitted = config ttl. */
+          ttl?: string;
         };
 
         // key must be a string when present (undefined keeps, "" removes)
         if (parsed.key !== undefined && typeof parsed.key !== "string") {
           json(res, 400, { error: "'key' must be a string" });
           return;
+        }
+
+        // Reject a malformed TTL here rather than letting it reach the store,
+        // where it would abort the deploy after the files are already written.
+        if (parsed.ttl !== undefined) {
+          try {
+            parseTtlMs(parsed.ttl);
+          } catch (err) {
+            json(res, 400, { error: (err as Error).message });
+            return;
+          }
         }
 
         // Validate name if provided
@@ -172,11 +185,13 @@ async function handleApiRequest(
         if (parsed.slug) {
           // Update existing deployment (slug field accepts slug OR name)
           const resolvedSlug = store.update(
-            parsed.slug, html, files, entry, filename, parsed.key
+            parsed.slug, html, files, entry, filename, parsed.key, parsed.ttl
           );
           json(res, 200, { slug: resolvedSlug });
         } else {
-          const slug = store.store(html, files, entry, filename, parsed.name, parsed.key);
+          const slug = store.store(
+            html, files, entry, filename, parsed.name, parsed.key, parsed.ttl
+          );
           json(res, 200, { slug });
         }
       } catch (err) {
@@ -186,6 +201,34 @@ async function handleApiRequest(
         } else {
           json(res, 400, { error: String(err) });
         }
+      }
+      return;
+    }
+
+    // ------------------------------------------------------------------
+    // POST /prune — reclaim expired and/or unviewed deployments
+    // ------------------------------------------------------------------
+    if (req.method === "POST" && url.pathname === "/prune") {
+      let bodyStr: string;
+      try {
+        bodyStr = await readBody(req, config.max_body_bytes);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "TOO_LARGE") {
+          json(res, 413, { error: "Request entity too large" });
+        } else {
+          json(res, 400, { error: String(err) });
+        }
+        return;
+      }
+      try {
+        const parsed = bodyStr
+          ? (JSON.parse(bodyStr) as { unseen?: string; dry_run?: boolean })
+          : {};
+        if (parsed.unseen !== undefined) parseTtlMs(parsed.unseen);
+        const pruned = store.prune({ unseen: parsed.unseen, dryRun: parsed.dry_run });
+        json(res, 200, { pruned });
+      } catch (err) {
+        json(res, 400, { error: (err as Error).message });
       }
       return;
     }

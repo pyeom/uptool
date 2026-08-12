@@ -4,6 +4,47 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## Unreleased
+
+### Added
+
+- **`uptool deploy --ttl <ttl>`** sets the expiry for a single deployment
+  instead of using the configured default. Works on update too, and `--watch`
+  reapplies it on every redeploy.
+- **`deploy --watch` accepts several targets.** Each is watched and redeployed
+  to its own URL; previously it refused more than one.
+- **`uptool prune`** removes expired deployments on demand, and with
+  `--unseen <ttl>` also the ones nobody has opened. `--dry-run` previews.
+- **Markdown deployments.** `.md`/`.markdown` files are rendered to a styled
+  standalone HTML page; `--markdown` forces it for stdin. Adds `marked` as a
+  dependency.
+- **Automatic gzip/brotli compression** for text responses over 1 KB, with
+  `Vary: Accept-Encoding` on every response.
+- **`uptool deploy --open`** opens the deployment in the default browser,
+  reusing the launcher `uptool open` already had.
+- **`uptool share <file>` — a public link with no domain and no account.**
+  Deploys the file and exposes it through a Cloudflare quick tunnel, printing a
+  random `*.trycloudflare.com` URL over HTTPS. Ctrl-C ends the tunnel; the
+  deployment stays local. Works with `--qr` and `--protect`, and live reload
+  works through the tunnel. `base_url` now defaults to `uptool.local`, so uptool
+  is usable without owning a domain at all.
+- **Optional Cloudflare Tunnel mode.** `uptool tunnel login` authorizes
+  cloudflared for one zone, `uptool tunnel setup` creates the tunnel and
+  switches uptool to HTTPS behind it, `uptool tunnel status` shows what's
+  wired up and whether the tunnel is connected, and `uptool tunnel off` goes
+  back. In this mode the public server binds to `127.0.0.1` only: no port
+  forwarding, no public IP, no certificates to manage. The `cloudflared`
+  binary is downloaded on demand and runs as a child of the daemon.
+- **`uptool status` knows about the tunnel.** Text output gains a tunnel line,
+  `--json` gains `tunnel`, `tunnel_healthy` and `tunnel_url`. `healthy` (and
+  therefore the exit code) additionally requires a connected tunnel — but only
+  when tunnel mode is on; in local mode its meaning is unchanged.
+- **`uptool init` asks whether to use a tunnel** and prints the two commands to
+  run. It doesn't enable anything itself.
+
+Default behaviour is unchanged: `tunnel = "none"`, the server still binds
+`0.0.0.0` over plain HTTP, and nothing extra is spawned unless you opt in.
+
 ## 0.3.0 - 2026-08-01
 
 ### Added

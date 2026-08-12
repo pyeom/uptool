@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as http from "node:http";
 import { readLogTail, statusCommand } from "../src/commands/status.js";
 import { logsCommand, followLog } from "../src/commands/logs.js";
+import { freePort } from "./helpers.js";
 
 const CHUNK = 16 * 1024;
 
@@ -288,6 +289,100 @@ describe("statusCommand", () => {
       base_url: "test.local",
       api_port: apiPort,
     });
+  });
+
+  // A healthy daemon: own (always-alive) pid + an API answering /files. Returns
+  // the api port so the caller can write it into config.toml.
+  async function startFakeApi(): Promise<{ port: number; close: () => Promise<void> }> {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ files: [1, 2, 3] }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return {
+      port: (server.address() as { port: number }).port,
+      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    };
+  }
+
+  function writeStatusConfig(extra: string, apiPort: number): void {
+    fs.writeFileSync(
+      path.join(tmpHome, ".uptool", "config.toml"),
+      `base_url = "test.local"\nport = 3000\napi_port = ${apiPort}\nttl = "72h"\nstorage_path = ${JSON.stringify(
+        path.join(tmpHome, ".uptool", "files")
+      )}\n${extra}`
+    );
+    fs.writeFileSync(path.join(tmpHome, ".uptool", "token"), "tok");
+  }
+
+  function parseJsonOutput(): Record<string, unknown> {
+    const jsonCall = logSpy.mock.calls.find((c) => {
+      try {
+        JSON.parse(c[0]);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    return JSON.parse(jsonCall![0]);
+  }
+
+  it("--json in local mode reports tunnel:none, tunnel_healthy:null and keeps healthy's meaning", async () => {
+    fs.writeFileSync(pidFile(), String(process.pid));
+    const api = await startFakeApi();
+    writeStatusConfig("", api.port);
+
+    const exitSpy = vi
+      .spyOn(process, "exit")
+      .mockImplementation((() => undefined as never) as typeof process.exit);
+
+    try {
+      await statusCommand({ json: true });
+    } finally {
+      await api.close();
+    }
+
+    expect(parseJsonOutput()).toMatchObject({
+      running: true,
+      api_responding: true,
+      healthy: true,
+      tunnel: "none",
+      tunnel_healthy: null,
+      tunnel_url: "http://*.test.local",
+    });
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("--json in cloudflare mode with the tunnel down reports healthy:false and exits 1", async () => {
+    fs.writeFileSync(pidFile(), String(process.pid));
+    const api = await startFakeApi();
+    // Never bind this port: /ready must fail. Must not be the default 20241 —
+    // a real cloudflared may be listening there on the developer's machine.
+    const metricsPort = await freePort();
+    writeStatusConfig(
+      `tunnel = "cloudflare"\ntunnel_metrics_port = ${metricsPort}\nscheme = "https"\n`,
+      api.port
+    );
+
+    const exitSpy = vi
+      .spyOn(process, "exit")
+      .mockImplementation((() => undefined as never) as typeof process.exit);
+
+    try {
+      await statusCommand({ json: true });
+    } finally {
+      await api.close();
+    }
+
+    expect(parseJsonOutput()).toMatchObject({
+      running: true,
+      api_responding: true,
+      healthy: false,
+      tunnel: "cloudflare",
+      tunnel_healthy: false,
+      tunnel_url: "https://*.test.local",
+    });
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it("--json with a running process but unreachable API reports deployments:null and healthy:false", async () => {

@@ -2,7 +2,9 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { startDaemon, runCli, tempHome, writeConfig, type Daemon } from "./helpers.js";
+import * as http from "node:http";
+import * as child_process from "node:child_process";
+import { startDaemon, runCli, tempHome, writeConfig, CLI_PATH, type Daemon } from "./helpers.js";
 
 /**
  * test/cli.test.ts — the user-facing contract.
@@ -20,6 +22,60 @@ function writeHtmlFile(dir: string, name: string, content: string): string {
   const p = path.join(dir, name);
   fs.writeFileSync(p, content);
   return p;
+}
+
+/**
+ * Fetch what the public server actually serves for a slug. The daemon's
+ * base_url is whatever writeConfig() set, so the Host header has to match it
+ * for the subdomain routing to resolve.
+ */
+function fetchDeployed(daemon: Daemon, slug: string, baseUrl = "test.local"): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: "127.0.0.1",
+        port: daemon.pubPort,
+        path: "/",
+        headers: { host: `${slug}.${baseUrl}` },
+      },
+      (res) => {
+        let body = "";
+        res.on("data", (c) => (body += c));
+        res.on("end", () => resolve(body));
+      }
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+/**
+ * Run a CLI command that stays in the foreground (`--watch`), letting a test
+ * wait for lines as they arrive and then kill it. runCli() can't be used here:
+ * it resolves on exit, and these commands never exit on their own.
+ */
+function watchCli(args: string[], home: string) {
+  const child = child_process.spawn(process.execPath, [CLI_PATH, ...args], {
+    env: { ...process.env, HOME: home },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out = "";
+  child.stdout.on("data", (c) => (out += c));
+  child.stderr.on("data", (c) => (out += c));
+
+  return {
+    output: () => out,
+    kill: () => child.kill("SIGKILL"),
+    async waitFor(pattern: RegExp, timeoutMs: number): Promise<void> {
+      const deadline = Date.now() + timeoutMs;
+      while (!pattern.test(out)) {
+        if (Date.now() > deadline) {
+          throw new Error(`timed out waiting for ${pattern}\n--- output ---\n${out}`);
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    },
+  };
 }
 
 describe("cli.test.ts", () => {
@@ -112,6 +168,98 @@ describe("cli.test.ts", () => {
       expect(res.stdout.length).toBeGreaterThan(200);
     });
 
+    it("--ttl reports the per-deployment expiry, not the config one", async () => {
+      const f = writeHtmlFile(scratch, "ttl.html", "<h1>ttl</h1>");
+      const res = await runCli(["deploy", f, "--ttl", "2h"], { home: daemon.home });
+      expect(res.code).toBe(0);
+      expect(res.stdout).toMatch(/expires in 2h/);
+    });
+
+    it("--ttl 0 deploys without an expiry notice", async () => {
+      const f = writeHtmlFile(scratch, "forever.html", "<h1>forever</h1>");
+      const res = await runCli(["deploy", f, "--ttl", "0"], { home: daemon.home });
+      expect(res.code).toBe(0);
+      expect(res.stdout).not.toMatch(/expires in/);
+    });
+
+    it("rejects a malformed --ttl", async () => {
+      const f = writeHtmlFile(scratch, "badttl.html", "<h1>bad</h1>");
+      const res = await runCli(["deploy", f, "--ttl", "2 weeks"], { home: daemon.home });
+      expect(res.code).toBe(1);
+      expect(res.stderr).toMatch(/Invalid TTL/);
+    });
+
+    it("--open hands the deployed URL to the desktop launcher", async () => {
+      // The launcher is resolved through PATH, so a fake one in front of it
+      // captures the call instead of opening a real browser on the test machine.
+      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "uptool-open-"));
+      const launcher =
+        process.platform === "darwin"
+          ? "open"
+          : process.platform === "win32"
+            ? "start"
+            : "xdg-open";
+      const captured = path.join(binDir, "opened.txt");
+      fs.writeFileSync(
+        path.join(binDir, launcher),
+        `#!/bin/sh\necho "$1" > ${JSON.stringify(captured)}\n`,
+        { mode: 0o755 }
+      );
+
+      try {
+        const f = writeHtmlFile(scratch, "open.html", "<h1>open</h1>");
+        const res = await runCli(["deploy", f, "--open"], {
+          home: daemon.home,
+          env: { PATH: `${binDir}:${process.env.PATH}` },
+        });
+        expect(res.code).toBe(0);
+
+        const url = res.stdout.match(/https?:\/\/\S+/)![0];
+        // The launcher is detached, so give it a moment to actually run.
+        await new Promise((r) => setTimeout(r, 500));
+        expect(fs.readFileSync(captured, "utf8").trim()).toBe(url);
+      } finally {
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    });
+
+    it("renders a .md file to HTML without being asked", async () => {
+      const f = path.join(scratch, "notes.md");
+      fs.writeFileSync(f, "# Title\n\n- one\n- two\n");
+      const res = await runCli(["deploy", f], { home: daemon.home });
+      expect(res.code).toBe(0);
+
+      const url = res.stdout.match(/https?:\/\/\S+/)![0];
+      const slug = new URL(url).hostname.split(".")[0];
+      const served = await fetchDeployed(daemon, slug);
+      expect(served).toContain("<h1>Title</h1>");
+      expect(served).toContain("<li>one</li>");
+      expect(served).toContain("<title>Title</title>");
+    });
+
+    it("--markdown renders stdin as Markdown", async () => {
+      const res = await runCli(["deploy", "--markdown"], {
+        home: daemon.home,
+        input: "# From stdin\n",
+      });
+      expect(res.code).toBe(0);
+
+      const url = res.stdout.match(/https?:\/\/\S+/)![0];
+      const slug = new URL(url).hostname.split(".")[0];
+      expect(await fetchDeployed(daemon, slug)).toContain("<h1>From stdin</h1>");
+    });
+
+    it("leaves .html files untouched", async () => {
+      const f = writeHtmlFile(scratch, "plain.html", "<h1>plain # not markdown</h1>");
+      const res = await runCli(["deploy", f], { home: daemon.home });
+      const url = res.stdout.match(/https?:\/\/\S+/)![0];
+      const slug = new URL(url).hostname.split(".")[0];
+
+      const served = await fetchDeployed(daemon, slug);
+      expect(served).toContain("<h1>plain # not markdown</h1>");
+      expect(served).not.toContain("<!DOCTYPE html>");
+    });
+
     it("rejects --name with multiple files", async () => {
       const f1 = writeHtmlFile(scratch, "rejn1.html", "<h1>1</h1>");
       const f2 = writeHtmlFile(scratch, "rejn2.html", "<h1>2</h1>");
@@ -124,17 +272,61 @@ describe("cli.test.ts", () => {
       expect(res.code).not.toBe(0);
     });
 
-    it("rejects --watch with multiple targets", async () => {
-      const f1 = writeHtmlFile(scratch, "watch1.html", "<h1>1</h1>");
-      const f2 = writeHtmlFile(scratch, "watch2.html", "<h1>2</h1>");
-      const res = await runCli(["deploy", f1, f2, "--watch"], { home: daemon.home, timeoutMs: 5000 });
-      expect(res.code).not.toBe(0);
+    it("--watch accepts several targets and redeploys each on change", async () => {
+      const f1 = writeHtmlFile(scratch, "watch1.html", "<h1>one v1</h1>");
+      const f2 = writeHtmlFile(scratch, "watch2.html", "<h1>two v1</h1>");
+
+      const w = watchCli(["deploy", f1, f2, "--watch"], daemon.home);
+      try {
+        await w.waitFor(/Watching 2 target/, 10_000);
+        const slugs = (w.output().match(/https?:\/\/\S+/g) ?? []).map(
+          (u) => new URL(u).hostname.split(".")[0]
+        );
+        expect(slugs).toHaveLength(2);
+
+        // Touch the second one: the pre-existing bug this guards against is
+        // only the first target being wired up.
+        fs.writeFileSync(f2, "<h1>two v2</h1>");
+        await w.waitFor(/↻ redeployed/, 10_000);
+
+        expect(await fetchDeployed(daemon, slugs[1])).toContain("two v2");
+        expect(await fetchDeployed(daemon, slugs[0])).toContain("one v1");
+      } finally {
+        w.kill();
+      }
     });
   });
 
   // ---------------------------------------------------------------------
   // list
   // ---------------------------------------------------------------------
+  describe("prune", () => {
+    it("reports nothing to do on a healthy store", async () => {
+      const res = await runCli(["prune"], { home: daemon.home });
+      expect(res.code).toBe(0);
+      expect(res.stdout).toMatch(/Nothing expired/);
+    });
+
+    it("--dry-run leaves the deployment in place", async () => {
+      const f = writeHtmlFile(scratch, "prune.html", "<h1>prune</h1>");
+      const deployed = await runCli(["deploy", f, "--ttl", "0"], { home: daemon.home });
+      const slug = new URL(deployed.stdout.match(/https?:\/\/\S+/)![0]).hostname.split(".")[0];
+
+      // Nothing has viewed it, and --unseen 0m makes "never viewed" immediate.
+      const res = await runCli(["prune", "--unseen", "1m", "--dry-run"], { home: daemon.home });
+      expect(res.code).toBe(0);
+
+      const still = await runCli(["list", "--json"], { home: daemon.home });
+      expect(still.stdout).toContain(slug);
+    });
+
+    it("rejects a malformed --unseen", async () => {
+      const res = await runCli(["prune", "--unseen", "ages"], { home: daemon.home });
+      expect(res.code).toBe(1);
+      expect(res.stderr).toMatch(/Invalid TTL/);
+    });
+  });
+
   describe("list", () => {
     it("shows empty-state message when there are no deployments", async () => {
       const empty = await startDaemon();

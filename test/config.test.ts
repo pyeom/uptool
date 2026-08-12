@@ -12,6 +12,7 @@ import {
   saveToken,
   tokenPath,
   configPath,
+  cloudflaredYmlPath,
   resolvePath,
   type Config,
 } from "../src/config/index.js";
@@ -173,6 +174,28 @@ describe("config file I/O (isolated HOME)", () => {
       expect(loaded.api_port).toBe(DEFAULT_CONFIG.api_port);
       expect(loaded.ttl).toBe(DEFAULT_CONFIG.ttl);
       expect(loaded.max_versions).toBe(DEFAULT_CONFIG.max_versions);
+    });
+
+    it("a pre-tunnel config.toml still loads, with tunnelling off by default", () => {
+      // Retro-compatibility: a config written before the tunnel keys existed
+      // must keep working, and must not silently opt into a tunnel.
+      const dir = path.join(tmpHome, ".uptool");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "config.toml"), `base_url = "old.example.com"\nport = 3000\n`);
+
+      const loaded = loadConfig();
+      expect(loaded.base_url).toBe("old.example.com");
+      expect(loaded.tunnel).toBe("none");
+      expect(loaded.tunnel_name).toBe("uptool");
+      expect(loaded.tunnel_id).toBe("");
+      expect(loaded.tunnel_metrics_port).toBe(20241);
+      expect(loaded.cloudflared_path).toBe("");
+      // Previously the public server listened on every interface (no host arg)
+      expect(loaded.bind).toBe("0.0.0.0");
+    });
+
+    it("cloudflaredYmlPath sits next to config.toml in the config dir", () => {
+      expect(cloudflaredYmlPath()).toBe(path.join(tmpHome, ".uptool", "cloudflared.yml"));
     });
 
     it("throws with 'uptool init' guidance when config file is missing", () => {

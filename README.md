@@ -65,16 +65,78 @@ npm unlink -g uptool
 
 ## Prerequisites
 
-You need:
+**No domain? You need nothing at all** — jump to [Share a file](#share-a-file-no-domain-needed).
 
-1. **A domain you control** (e.g. `mydev.com`)
-2. **A wildcard DNS record** pointing to your machine:
-   ```
-   *.mydev.com  →  A  →  <your machine's public IP>
-   ```
-3. **Port forwarding** on your router: port 3000 (or whichever you configure) → your machine
+To serve on your own domain you need one you control (e.g. `mydev.com`), plus, depending on how you expose it (see [Exposure modes](#exposure-modes)):
 
-> **No static IP?** Use [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) — free, no port forwarding needed.
+- **Local mode** (default) — a wildcard DNS record `*.mydev.com → A → <your machine's public IP>`, and port forwarding on your router for port 3000 (or whichever you configure).
+- **Cloudflare Tunnel mode** — the domain must be a zone in a Cloudflare account. No public IP, no open ports, no forwarding.
+
+---
+
+## Share a file (no domain needed)
+
+```bash
+uptool share report.html
+# Opening a public tunnel…
+# ✓ https://harbor-recreation-chen-promoted.trycloudflare.com
+```
+
+Deploys the file and puts it behind a throwaway [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/): a random public URL, over HTTPS, with no domain, no Cloudflare account and no DNS record. Send the link to anyone. Ctrl-C ends it.
+
+Combines with `--qr` (handy for opening it on a phone) and `--protect` (Basic Auth on top of the link). Live reload works through the tunnel, so `--update`ing the deployment refreshes any open tab.
+
+The link is not resumable: a new `uptool share` gets a new random URL. The deployment itself stays on your machine after Ctrl-C — remove it with `uptool rm <slug>`.
+
+> Quick tunnels are rate-limited and explicitly not meant for production. For something durable, use a domain and one of the exposure modes below.
+
+---
+
+## Exposure modes
+
+| | `uptool share` | Local (default) | Cloudflare Tunnel |
+|---|---|---|---|
+| Domain needed | none | your own | your own, as a Cloudflare zone |
+| Account needed | none | none | Cloudflare (free plan is enough) |
+| URL | random, per share | `<slug>.mydev.com`, stable | `<slug>.mydev.com`, stable |
+| Lifetime | while the command runs | as long as the daemon runs | as long as the daemon runs |
+| DNS | none | wildcard A record → your public IP | wildcard CNAME → the tunnel |
+| Router | nothing to open | port forwarding required | nothing to open |
+| Public IP | not needed | required (static or dynamic DNS) | not needed |
+| HTTPS | included | your own certs (`cert_file`/`key_file`) or a proxy | included, terminated by Cloudflare |
+
+Local mode is the default and requires no account anywhere: uptool listens on your machine and the internet reaches it directly. Nothing about it changed when tunnels were added — if you never run `uptool tunnel` or `uptool share`, nothing extra is spawned.
+
+Tunnel mode runs `cloudflared` as a child of the daemon, which dials out to Cloudflare and receives traffic over that connection.
+
+```bash
+uptool tunnel login   # browser flow; authorizes cloudflared for one zone,
+                      # writing ~/.cloudflared/cert.pem
+uptool tunnel setup   # creates (or reuses) the tunnel, writes
+                      # ~/.uptool/cloudflared.yml, tries the DNS record, and
+                      # switches the config to https + trust_proxy + 127.0.0.1
+uptool tunnel status  # binary, cert, config, tunnel id, live health
+uptool tunnel off     # back to local mode; deletes nothing on Cloudflare
+```
+
+`uptool status` reports tunnel health too, and `uptool status --json` gains `tunnel`, `tunnel_healthy` and `tunnel_url`. In tunnel mode the daemon is only healthy when the tunnel is connected.
+
+### Use the apex domain
+
+Cloudflare's free Universal SSL covers a single wildcard level: `*.mydev.com` gets a valid certificate, `*.dev.mydev.com` does not. Set `base_url` to the apex domain (`mydev.com`), or browsers will show a TLS error on every deployment. The alternative is Advanced Certificate Manager (paid) or bringing your own certificate.
+
+### The wildcard DNS record is usually manual
+
+`uptool tunnel setup` tries to create the record, but the Cloudflare API rejects wildcard records created that way. This is expected — add it yourself, in the dashboard under **DNS → Records → Add record**:
+
+```
+Type:   CNAME
+Name:   *
+Target: <tunnel-UUID>.cfargotunnel.com
+Proxy:  Proxied (orange cloud)
+```
+
+`setup` prints the UUID for you. Proxied wildcard records are available on every plan, Free included.
 
 ---
 
@@ -98,8 +160,16 @@ max_file_size = 5242880        # max bytes per deployed file (0 = unlimited, def
 max_total_storage = 524288000  # max bytes across all deployments (0 = unlimited, default 500 MB)
 rate_limit_rpm = 0     # per-IP requests/min on the public server (0 = off)
 trust_proxy = false    # read X-Forwarded-For for client IP (only behind a proxy you control)
+bind = "0.0.0.0"       # interface the public server listens on
 # cert_file = "/path/fullchain.pem"   # enables HTTPS when set with key_file
 # key_file  = "/path/privkey.pem"
+
+# Tunnel — written by `uptool tunnel setup`, not by `uptool init`
+tunnel = "none"              # "none" (default) or "cloudflare"
+tunnel_name = "uptool"       # name of the Cloudflare tunnel to create/reuse
+tunnel_id = ""               # UUID, filled in by setup
+tunnel_metrics_port = 20241  # cloudflared's local metrics port (health checks)
+cloudflared_path = ""        # explicit binary path; empty = look it up in PATH
 ```
 
 ---
@@ -168,7 +238,19 @@ uptool deploy dashboard.html --watch
 # ↻ redeployed http://x7k2mq.mydev.com (14:32:07)
 ```
 
-Works on a single file or a directory bundle, and combines with `--qr` (printed once, on the first deploy). Changes are debounced 300ms. `--watch` requires exactly one file/directory argument and can't be used with stdin. Stop with Ctrl-C.
+Works on files and directory bundles, and on several at once — each target is
+watched and redeployed to its own URL:
+
+```bash
+uptool deploy dashboard.html report.html --watch
+# ✓ http://x7k2mq.mydev.com
+# ✓ http://a9f3kd.mydev.com
+# Watching 2 target(s) for changes... (Ctrl-C to stop)
+```
+
+Combines with `--qr` (printed once, on the first deploy). Changes are debounced
+300ms. `--watch` needs at least one file/directory argument and can't be used
+with stdin. Stop with Ctrl-C.
 
 ### Protected deployments
 
@@ -183,6 +265,45 @@ uptool deploy report.html --protect mysecret   # or bring your own
 ```
 
 The browser prompts once (leave the username blank, paste the key as the password) and re-sends credentials for every asset in the bundle. Updating with `--update` keeps the existing key. Use HTTPS — Basic Auth over plain HTTP is readable in transit.
+
+### Markdown
+
+```bash
+uptool deploy notes.md
+```
+
+`.md` and `.markdown` files are rendered to a styled HTML page automatically —
+readable typography, code blocks, tables, light and dark. LLMs write far more
+Markdown than HTML, so this skips the "now convert it to HTML" step.
+
+Use `--markdown` to force it, which is how you pipe Markdown in:
+
+```bash
+llm "summarise this" | uptool deploy --markdown
+```
+
+`uptool share notes.md` renders it too.
+
+### Open in the browser
+
+```bash
+uptool deploy dashboard.html --open
+```
+
+Hands the URL to your desktop's default browser. Combines with everything else;
+with several files it opens one tab per deployment.
+
+### Per-deployment expiry
+
+Override the configured `ttl` for one deployment:
+
+```bash
+uptool deploy draft.html --ttl 2h    # gone in two hours
+uptool deploy notes.html --ttl 0     # never expires
+```
+
+Accepts the same formats as the config (`30m`, `2h`, `7d`, `0`). With `--watch`,
+the TTL is reapplied on every redeploy instead of falling back to the default.
 
 ### Renew expiry
 
@@ -216,6 +337,20 @@ uptool list --json
 ```
 
 Access keys of protected deployments are never included in either output.
+
+### Prune
+
+Reclaim space on demand. The daemon already sweeps expired deployments hourly;
+this also catches the pile nobody ever opened:
+
+```bash
+uptool prune                        # expired only
+uptool prune --unseen 30d           # plus anything not viewed in 30 days
+uptool prune --unseen 30d --dry-run # show what would go, delete nothing
+```
+
+`--unseen` measures from the last view, or from the deploy time for something
+never viewed at all. `--json` emits the list for scripts.
 
 ### Remove a deployment
 
@@ -274,7 +409,9 @@ Works with Claude Code, Cursor, Cline, or any tool-enabled LLM that can run shel
 ```
 uptool serve
   ├── Public server  (port 3000)  — routes by subdomain slug → serves HTML
-  └── Internal API   (port 3001)  — localhost only, accepts deploy/list/rm
+  ├── Internal API   (port 3001)  — localhost only, accepts deploy/list/rm
+  └── cloudflared    (tunnel mode only) — child process, dials out to
+                                          Cloudflare and forwards to port 3000
 
 uptool deploy file.html
   └── POSTs HTML to internal API → gets slug back → prints URL
@@ -295,6 +432,17 @@ Files stored at `~/.uptool/files/<slug>.html`. Manifest at `~/.uptool/files/mani
 
 ---
 
+## Compression
+
+Text responses over 1 KB are compressed automatically: brotli when the browser
+accepts it, gzip otherwise. Already-compressed types (images, fonts) are left
+alone, and every response carries `Vary: Accept-Encoding` so caches can't hand
+a compressed body to a client that didn't ask for one.
+
+Nothing to configure. A typical LLM-generated page drops by 95%.
+
+---
+
 ## Security & threat model
 
 uptool serves files from **your** machine on **your** domain, reachable by anyone on the internet. Understand what that means before you point a domain at it.
@@ -303,8 +451,9 @@ uptool serves files from **your** machine on **your** domain, reachable by anyon
 - **Slugs are unguessable; names are not.** Random slugs (`x7k2mq`) are 8 chars of crypto-random base36 — not enumerable. But a named deployment (`--name dashboard`) is trivially guessable (`dashboard.yourdomain`). Use names only for content you're fine exposing.
 - **You are responsible for what you host.** Serving content on your domain makes you the publisher of it. Don't deploy untrusted HTML you wouldn't stand behind.
 - **The internal API is protected with a bearer token.** It binds to `127.0.0.1` and checks the `Authorization: Bearer <token>` header. The token is stored in `~/.uptool/token` (mode 0600, readable by your user only) and generated during `uptool init`. All CLI commands read this token and pass it to the daemon.
-- **Protected deployments use Basic Auth.** `--protect` keys are stored in the local manifest and checked with a constant-time compare. Over plain HTTP the key travels base64-encoded, not encrypted — combine `--protect` with HTTPS or treat it as a speed bump, not a lock.
-- **Use HTTPS for anything real.** Set `cert_file`/`key_file` (certs for your own domain), or terminate TLS at a proxy such as Cloudflare Tunnel. Plain HTTP sends content — and the live-reload socket — in the clear.
+- **Protected deployments use Basic Auth.** `--protect` keys are stored in the local manifest and checked with a constant-time compare. Over plain HTTP the key travels base64-encoded, not encrypted — so in local mode combine `--protect` with HTTPS or treat it as a speed bump, not a lock. In tunnel mode the visitor's connection is HTTPS already, so the key is encrypted in transit.
+- **Use HTTPS for anything real.** In tunnel mode this is handled for you: Cloudflare terminates TLS and the local server only listens on `127.0.0.1`. In local mode you have to arrange it — set `cert_file`/`key_file` with certs for your own domain, or terminate TLS at a proxy. Plain HTTP sends content — and the live-reload socket — in the clear.
+- **`cert.pem` is a broad credential.** `uptool tunnel login` writes `~/.cloudflared/cert.pem`, which authorizes managing tunnels and DNS records for the whole zone — not just this tunnel. Treat it like an API key: user-readable only, and don't copy it to machines you don't trust.
 - **Abuse controls.** The public server sets request/header/idle timeouts by default. Deploys are capped by `max_file_size` (5 MB) and `max_total_storage` (500 MB) so a looping LLM can't fill your disk. For raw internet exposure you can also set `rate_limit_rpm`. Behind a proxy/tunnel, set `trust_proxy = true` so the limit keys off the real visitor IP instead of the proxy.
 
 Found a vulnerability? Open an issue at https://github.com/pyeom/uptool/issues (or mark it security-sensitive).

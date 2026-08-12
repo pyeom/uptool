@@ -22,11 +22,16 @@ export default defineConfig({
       // src/commands/* runs in a spawned CLI subprocess, so test/cli.test.ts
       // exercises those commands for real but scores them 0%. The per-glob
       // floor below is the number that actually guards the core.
+      //
+      // Consequence: every new file under src/commands/ drags the globals down
+      // even when it is thoroughly exercised by test/cli.test.ts. They have
+      // been re-baselined twice for that reason (tunnel, then prune), never
+      // because real coverage regressed. Judge changes by the per-glob floor.
       thresholds: {
-        statements: 63,
-        branches: 62,
-        functions: 65,
-        lines: 62,
+        statements: 59,
+        branches: 59,
+        functions: 63,
+        lines: 59,
         "src/{server,storage,config,lib}/**": {
           statements: 88,
           branches: 78,

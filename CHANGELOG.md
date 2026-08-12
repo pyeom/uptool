@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`uptool deploy --ttl <ttl>`** sets the expiry for a single deployment
   instead of using the configured default. Works on update too, and `--watch`
   reapplies it on every redeploy.
+- **`deploy --watch` accepts several targets.** Each is watched and redeployed
+  to its own URL; previously it refused more than one.
 - **`uptool prune`** removes expired deployments on demand, and with
   `--unseen <ttl>` also the ones nobody has opened. `--dry-run` previews.
 - **Markdown deployments.** `.md`/`.markdown` files are rendered to a styled

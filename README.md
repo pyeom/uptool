@@ -238,7 +238,19 @@ uptool deploy dashboard.html --watch
 # ↻ redeployed http://x7k2mq.mydev.com (14:32:07)
 ```
 
-Works on a single file or a directory bundle, and combines with `--qr` (printed once, on the first deploy). Changes are debounced 300ms. `--watch` requires exactly one file/directory argument and can't be used with stdin. Stop with Ctrl-C.
+Works on files and directory bundles, and on several at once — each target is
+watched and redeployed to its own URL:
+
+```bash
+uptool deploy dashboard.html report.html --watch
+# ✓ http://x7k2mq.mydev.com
+# ✓ http://a9f3kd.mydev.com
+# Watching 2 target(s) for changes... (Ctrl-C to stop)
+```
+
+Combines with `--qr` (printed once, on the first deploy). Changes are debounced
+300ms. `--watch` needs at least one file/directory argument and can't be used
+with stdin. Stop with Ctrl-C.
 
 ### Protected deployments
 

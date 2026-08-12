@@ -3,7 +3,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as http from "node:http";
-import { startDaemon, runCli, tempHome, writeConfig, type Daemon } from "./helpers.js";
+import * as child_process from "node:child_process";
+import { startDaemon, runCli, tempHome, writeConfig, CLI_PATH, type Daemon } from "./helpers.js";
 
 /**
  * test/cli.test.ts — the user-facing contract.
@@ -46,6 +47,35 @@ function fetchDeployed(daemon: Daemon, slug: string, baseUrl = "test.local"): Pr
     req.on("error", reject);
     req.end();
   });
+}
+
+/**
+ * Run a CLI command that stays in the foreground (`--watch`), letting a test
+ * wait for lines as they arrive and then kill it. runCli() can't be used here:
+ * it resolves on exit, and these commands never exit on their own.
+ */
+function watchCli(args: string[], home: string) {
+  const child = child_process.spawn(process.execPath, [CLI_PATH, ...args], {
+    env: { ...process.env, HOME: home },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out = "";
+  child.stdout.on("data", (c) => (out += c));
+  child.stderr.on("data", (c) => (out += c));
+
+  return {
+    output: () => out,
+    kill: () => child.kill("SIGKILL"),
+    async waitFor(pattern: RegExp, timeoutMs: number): Promise<void> {
+      const deadline = Date.now() + timeoutMs;
+      while (!pattern.test(out)) {
+        if (Date.now() > deadline) {
+          throw new Error(`timed out waiting for ${pattern}\n--- output ---\n${out}`);
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    },
+  };
 }
 
 describe("cli.test.ts", () => {
@@ -242,11 +272,28 @@ describe("cli.test.ts", () => {
       expect(res.code).not.toBe(0);
     });
 
-    it("rejects --watch with multiple targets", async () => {
-      const f1 = writeHtmlFile(scratch, "watch1.html", "<h1>1</h1>");
-      const f2 = writeHtmlFile(scratch, "watch2.html", "<h1>2</h1>");
-      const res = await runCli(["deploy", f1, f2, "--watch"], { home: daemon.home, timeoutMs: 5000 });
-      expect(res.code).not.toBe(0);
+    it("--watch accepts several targets and redeploys each on change", async () => {
+      const f1 = writeHtmlFile(scratch, "watch1.html", "<h1>one v1</h1>");
+      const f2 = writeHtmlFile(scratch, "watch2.html", "<h1>two v1</h1>");
+
+      const w = watchCli(["deploy", f1, f2, "--watch"], daemon.home);
+      try {
+        await w.waitFor(/Watching 2 target/, 10_000);
+        const slugs = (w.output().match(/https?:\/\/\S+/g) ?? []).map(
+          (u) => new URL(u).hostname.split(".")[0]
+        );
+        expect(slugs).toHaveLength(2);
+
+        // Touch the second one: the pre-existing bug this guards against is
+        // only the first target being wired up.
+        fs.writeFileSync(f2, "<h1>two v2</h1>");
+        await w.waitFor(/↻ redeployed/, 10_000);
+
+        expect(await fetchDeployed(daemon, slugs[1])).toContain("two v2");
+        expect(await fetchDeployed(daemon, slugs[0])).toContain("one v1");
+      } finally {
+        w.kill();
+      }
     });
   });
 

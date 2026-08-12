@@ -60,7 +60,7 @@ program
   .option("--qr", "Print a QR code for the public URL", false)
   .option(
     "--watch",
-    "Watch the file/directory and redeploy on change (single target only)",
+    "Watch the file(s)/directory(ies) and redeploy on change",
     false
   )
   .option("-t, --ttl <ttl>", "Expiry for this deployment (e.g. 2h, 7d, 0 = never)")

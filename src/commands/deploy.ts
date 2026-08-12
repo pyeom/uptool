@@ -7,6 +7,7 @@ import { callApi } from "../lib/api-client.js";
 import { validateBundlePath } from "../storage/index.js";
 import { debounce, formatTime } from "../lib/watch.js";
 import { openUrl } from "./open.js";
+import { isMarkdownPath, renderMarkdown } from "../lib/markdown.js";
 
 function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -35,15 +36,19 @@ export function walkDir(dir: string, baseDir: string): Array<{ rel: string; full
 }
 
 export async function buildBody(
-  filePath: string | undefined
+  filePath: string | undefined,
+  forceMarkdown = false
 ): Promise<Record<string, unknown>> {
   if (!filePath) {
-    const html = await readStdin();
-    if (!html.trim()) {
+    const input = await readStdin();
+    if (!input.trim()) {
       console.error("No content provided.");
       process.exit(1);
     }
-    return { html, filename: "stdin.html" };
+    if (forceMarkdown) {
+      return { html: renderMarkdown(input, "stdin"), filename: "stdin.md" };
+    }
+    return { html: input, filename: "stdin.html" };
   }
 
   if (!fs.existsSync(filePath)) {
@@ -87,8 +92,12 @@ export async function buildBody(
     return { files, entry, filename: path.basename(path.resolve(filePath)) };
   }
 
-  const html = fs.readFileSync(filePath, "utf8");
-  return { html, filename: path.basename(filePath) };
+  const filename = path.basename(filePath);
+  const source = fs.readFileSync(filePath, "utf8");
+  if (forceMarkdown || isMarkdownPath(filePath)) {
+    return { html: renderMarkdown(source, filename), filename };
+  }
+  return { html: source, filename };
 }
 
 /** Watch a file or directory and redeploy (in place, by slug) on change. */
@@ -97,13 +106,14 @@ function watchAndRedeploy(
   slug: string,
   key: string | undefined,
   config: Config,
-  ttl?: string
+  ttl?: string,
+  markdown = false
 ): void {
   console.log(`\nWatching ${target} for changes... (Ctrl-C to stop)`);
 
   const redeploy = debounce(async () => {
     try {
-      const body = await buildBody(target);
+      const body = await buildBody(target, markdown);
       body.slug = slug;
       if (key) body.key = key;
       // Without this every redeploy would silently reset the expiry to the
@@ -158,6 +168,7 @@ export async function deployCommand(
     watch?: boolean;
     ttl?: string;
     open?: boolean;
+    markdown?: boolean;
   }
 ): Promise<void> {
   const config = loadConfig();
@@ -199,7 +210,7 @@ export async function deployCommand(
   let watchSlug: string | undefined;
 
   for (const filePath of targets) {
-    const body = await buildBody(filePath);
+    const body = await buildBody(filePath, opts.markdown);
 
     if (!opts.update && opts.name) body.name = opts.name;
     if (opts.update) body.slug = opts.update;
@@ -236,6 +247,6 @@ export async function deployCommand(
   if (anyError) process.exit(1);
 
   if (opts.watch && watchTarget && watchSlug) {
-    watchAndRedeploy(watchTarget, watchSlug, key, config, opts.ttl);
+    watchAndRedeploy(watchTarget, watchSlug, key, config, opts.ttl, opts.markdown);
   }
 }

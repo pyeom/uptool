@@ -254,6 +254,24 @@ uptool deploy report.html --protect mysecret   # or bring your own
 
 The browser prompts once (leave the username blank, paste the key as the password) and re-sends credentials for every asset in the bundle. Updating with `--update` keeps the existing key. Use HTTPS — Basic Auth over plain HTTP is readable in transit.
 
+### Markdown
+
+```bash
+uptool deploy notes.md
+```
+
+`.md` and `.markdown` files are rendered to a styled HTML page automatically —
+readable typography, code blocks, tables, light and dark. LLMs write far more
+Markdown than HTML, so this skips the "now convert it to HTML" step.
+
+Use `--markdown` to force it, which is how you pipe Markdown in:
+
+```bash
+llm "summarise this" | uptool deploy --markdown
+```
+
+`uptool share notes.md` renders it too.
+
 ### Open in the browser
 
 ```bash

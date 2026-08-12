@@ -95,7 +95,8 @@ function watchAndRedeploy(
   target: string,
   slug: string,
   key: string | undefined,
-  config: Config
+  config: Config,
+  ttl?: string
 ): void {
   console.log(`\nWatching ${target} for changes... (Ctrl-C to stop)`);
 
@@ -104,6 +105,9 @@ function watchAndRedeploy(
       const body = await buildBody(target);
       body.slug = slug;
       if (key) body.key = key;
+      // Without this every redeploy would silently reset the expiry to the
+      // config default, quietly undoing an explicit --ttl.
+      if (ttl !== undefined) body.ttl = ttl;
       const result = await callApi<{ slug?: string; error?: string }>(
         config.api_port,
         "POST",
@@ -151,9 +155,20 @@ export async function deployCommand(
     protect?: string | boolean;
     qr?: boolean;
     watch?: boolean;
+    ttl?: string;
   }
 ): Promise<void> {
   const config = loadConfig();
+
+  // Validate locally for a fast, clear error before writing anything.
+  if (opts.ttl !== undefined) {
+    try {
+      parseTtlMs(opts.ttl);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  }
 
   const multi = filePaths.length > 1;
   if (multi && (opts.update || opts.name)) {
@@ -173,8 +188,9 @@ export async function deployCommand(
       : opts.protect || undefined;
 
   const targets = filePaths.length === 0 ? [undefined] : filePaths;
-  const ttlMs = parseTtlMs(config.ttl);
-  const expiry = ttlMs > 0 ? `  (expires in ${config.ttl})` : "";
+  const ttl = opts.ttl ?? config.ttl;
+  const ttlMs = parseTtlMs(ttl);
+  const expiry = ttlMs > 0 ? `  (expires in ${ttl})` : "";
 
   let anyError = false;
   let watchTarget: string | undefined;
@@ -186,6 +202,7 @@ export async function deployCommand(
     if (!opts.update && opts.name) body.name = opts.name;
     if (opts.update) body.slug = opts.update;
     if (key) body.key = key;
+    if (opts.ttl !== undefined) body.ttl = opts.ttl;
 
     try {
       const result = await callApi<{ slug?: string; error?: string }>(
@@ -216,6 +233,6 @@ export async function deployCommand(
   if (anyError) process.exit(1);
 
   if (opts.watch && watchTarget && watchSlug) {
-    watchAndRedeploy(watchTarget, watchSlug, key, config);
+    watchAndRedeploy(watchTarget, watchSlug, key, config, opts.ttl);
   }
 }

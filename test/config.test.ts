@@ -188,7 +188,8 @@ describe("config file I/O (isolated HOME)", () => {
       expect(loaded.tunnel).toBe("none");
       expect(loaded.tunnel_name).toBe("uptool");
       expect(loaded.tunnel_id).toBe("");
-      expect(loaded.tunnel_metrics_port).toBe(20241);
+      // 0 = pick a free port at startup; see tunnel-process.ts.
+      expect(loaded.tunnel_metrics_port).toBe(0);
       expect(loaded.cloudflared_path).toBe("");
       // Previously the public server listened on every interface (no host arg)
       expect(loaded.bind).toBe("0.0.0.0");

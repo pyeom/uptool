@@ -16,7 +16,7 @@ import { TunnelProcess } from "../lib/tunnel-process.js";
 import { findBinary } from "../lib/cloudflared.js";
 import { ManifestStore } from "../storage/index.js";
 
-export function serveCommand(opts: { foreground?: boolean }): void {
+export async function serveCommand(opts: { foreground?: boolean }): Promise<void> {
   const config = loadConfig();
 
   // -------------------------------------------------------------------------
@@ -86,7 +86,7 @@ export function serveCommand(opts: { foreground?: boolean }): void {
     store.on("updated", (slug: string) => wsManager!.broadcast(slug, "reload"));
   }
 
-  const tunnel = config.tunnel === "cloudflare" ? startTunnel(config) : null;
+  const tunnel = config.tunnel === "cloudflare" ? await startTunnel(config) : null;
 
   // Graceful shutdown
   let shuttingDown = false;
@@ -148,7 +148,7 @@ export function serveCommand(opts: { foreground?: boolean }): void {
  * Every failure here is non-fatal on purpose: a missing binary or a broken
  * tunnel must still leave the daemon serving over local HTTP.
  */
-function startTunnel(config: Config): TunnelProcess | null {
+async function startTunnel(config: Config): Promise<TunnelProcess | null> {
   const bin = findBinary(config.cloudflared_path);
   const yml = cloudflaredYmlPath();
   if (!bin) {
@@ -157,7 +157,7 @@ function startTunnel(config: Config): TunnelProcess | null {
     console.error(`[uptool] tunnel is on but ${yml} is missing — run: uptool tunnel setup`);
   } else {
     try {
-      return new TunnelProcess(bin, yml, config.tunnel_metrics_port);
+      return await TunnelProcess.create(bin, yml, config.tunnel_metrics_port);
     } catch (err) {
       console.error(`[uptool] could not start cloudflared: ${(err as Error).message}`);
     }

@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **Tunnel health could report someone else's tunnel as ours.** The probe hit a
+  fixed metrics port, and cloudflared's default (20241) is shared by every
+  cloudflared on the machine — so `uptool status --json` could return
+  `healthy: true` and exit 0 while uptool's own tunnel was down, which is
+  exactly the case monitoring exists to catch. The daemon now records the PID
+  and metrics port of the process it started in `~/.uptool/tunnel.json` and
+  only trusts the probe when that process is alive. `tunnel_metrics_port` now
+  defaults to 0 (pick a free port) and is only needed to pin one.
+
 ### Added
 
 - **`uptool deploy --ttl <ttl>`** sets the expiry for a single deployment

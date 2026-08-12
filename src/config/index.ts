@@ -49,7 +49,12 @@ export interface Config {
   tunnel_name: string;
   /** UUID of the created tunnel. Written by `uptool tunnel`; empty until then. */
   tunnel_id: string;
-  /** Port cloudflared exposes its metrics endpoint on (health checks). */
+  /**
+   * Port cloudflared exposes its metrics endpoint on (health checks).
+   * 0 (default) picks a free one at startup and records it in tunnel.json —
+   * cloudflared's own default, 20241, is shared by every cloudflared on the
+   * machine, so probing it can report someone else's tunnel as ours.
+   */
   tunnel_metrics_port: number;
   /** Explicit path to the cloudflared binary. Empty = look it up in PATH. */
   cloudflared_path: string;
@@ -81,7 +86,7 @@ export const DEFAULT_CONFIG: Config = {
   tunnel: "none",
   tunnel_name: "uptool",
   tunnel_id: "",
-  tunnel_metrics_port: 20241,
+  tunnel_metrics_port: 0,
   cloudflared_path: "",
   bind: "0.0.0.0",
 };
@@ -108,6 +113,11 @@ export function tokenPath(): string {
 
 export function cloudflaredYmlPath(): string {
   return path.join(configDir(), "cloudflared.yml");
+}
+
+/** Where the daemon records the cloudflared child it owns. See tunnel-process.ts. */
+export function tunnelStatePath(): string {
+  return path.join(configDir(), "tunnel.json");
 }
 
 export function loadOrGenerateToken(): string {

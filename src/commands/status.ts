@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { pidPath, logPath, loadConfig, Config } from "../config/index.js";
 import { callApi } from "../lib/api-client.js";
-import { probeReady } from "../lib/tunnel-process.js";
+import { tunnelHealthy } from "../lib/tunnel-process.js";
 
 function readPid(): number | null {
   const pidFile = pidPath();
@@ -49,12 +49,11 @@ export async function statusCommand(opts: { json?: boolean } = {}): Promise<void
   const tunnel = config?.tunnel ?? "none";
   // Only probe when a tunnel is actually configured: in local mode there is
   // nothing to ask, and tunnel health must not affect anything.
-  const tunnelHealthy =
-    tunnel === "cloudflare" ? await probeReady(config!.tunnel_metrics_port) : null;
+  const tunnelUp = tunnel === "cloudflare" ? await tunnelHealthy() : null;
 
   if (opts.json) {
     const deployments = running && config ? await probeApi(config) : null;
-    const healthy = running && deployments !== null && tunnelHealthy !== false;
+    const healthy = running && deployments !== null && tunnelUp !== false;
     console.log(
       JSON.stringify({
         running,
@@ -66,7 +65,7 @@ export async function statusCommand(opts: { json?: boolean } = {}): Promise<void
         port: config?.port ?? null,
         api_port: config?.api_port ?? null,
         tunnel,
-        tunnel_healthy: tunnelHealthy,
+        tunnel_healthy: tunnelUp,
         tunnel_url: config?.base_url ? `${config.scheme}://*.${config.base_url}` : null,
       })
     );
@@ -93,9 +92,9 @@ export async function statusCommand(opts: { json?: boolean } = {}): Promise<void
 
   if (tunnel === "cloudflare") {
     console.log(
-      tunnelHealthy
+      tunnelUp
         ? `tunnel: cloudflare (connected)`
-        : `tunnel: cloudflare (down — no response on http://127.0.0.1:${config!.tunnel_metrics_port}/ready)`
+        : `tunnel: cloudflare (down — cloudflared is not running or not connected)`
     );
   }
 

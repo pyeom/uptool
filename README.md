@@ -119,6 +119,13 @@ uptool tunnel status  # binary, cert, config, tunnel id, live health
 uptool tunnel off     # back to local mode; deletes nothing on Cloudflare
 ```
 
+Health is checked against the cloudflared process uptool itself started, whose
+PID and metrics port are recorded in `~/.uptool/tunnel.json`. That ownership
+check matters: cloudflared's default metrics port is the same for every
+cloudflared on the machine, so a port-only probe would report an unrelated
+tunnel — one you run by hand, say — as uptool's, and `status --json` would stay
+green while uptool was unreachable.
+
 `uptool status` reports tunnel health too, and `uptool status --json` gains `tunnel`, `tunnel_healthy` and `tunnel_url`. In tunnel mode the daemon is only healthy when the tunnel is connected.
 
 ### Use the apex domain
@@ -168,7 +175,8 @@ bind = "0.0.0.0"       # interface the public server listens on
 tunnel = "none"              # "none" (default) or "cloudflare"
 tunnel_name = "uptool"       # name of the Cloudflare tunnel to create/reuse
 tunnel_id = ""               # UUID, filled in by setup
-tunnel_metrics_port = 20241  # cloudflared's local metrics port (health checks)
+tunnel_metrics_port = 0      # 0 = pick a free port for cloudflared's metrics
+                             # endpoint (health checks). Set one only to pin it.
 cloudflared_path = ""        # explicit binary path; empty = look it up in PATH
 ```
 
